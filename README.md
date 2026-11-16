@@ -1,4 +1,4 @@
-# Mario Kart 64 PC Ultimate Edition — Ricky Gameplays
+# Mario Kart 64 PC Ultimate — Ricky Gameplays
 
 Unofficial fork of [HarbourMasters/SpaghettiKart](https://github.com/HarbourMasters/SpaghettiKart). Original PC port and engine by HarbourMasters and the SpaghettiKart contributors; customization by Ricky Gameplays.
 
@@ -10,6 +10,7 @@ Unofficial fork of [HarbourMasters/SpaghettiKart](https://github.com/HarbourMast
 - Optional **FPS counter** and **hold Tab to fast-forward**.
 - Adjustable **minimap size and transparency**, including player markers, with a separate shared map on each selected monitor.
 - Expanded results, standings, 9th–16th place graphics and Grand Prix ceremonies.
+- Additional characters and courses, with experimental course-specific improvements.
 - Multiplayer HUD, audio, fullscreen/monitor-switching and visual fixes, plus a live Luigi Raceway video screen.
 - Faster item-box respawns and reduced lightning frequency in 16-player mode; configurable race bomb obstacles.
 - Optional detailed crash logging and a Grand Prix finale shortcut.
@@ -18,13 +19,15 @@ Unofficial fork of [HarbourMasters/SpaghettiKart](https://github.com/HarbourMast
 
 8-player and 16-player options, Grand Prix bots, AFK takeover, Tab fast-forward and the Luigi Raceway multiplayer screen are enabled. AFK timeout is **5 seconds**; minimap size is **85%** with **25% transparency**. FPS counter and detailed logging default off. Existing saved settings override fresh defaults.
 
-## Windows download
+## Download and setup
 
-Download `Mario-Kart-64-PC-Ultimate-Edition-Ricky-Gameplays-v0.3.0-windows-x64.zip` below, extract the entire ZIP into a new folder, then run `Launch-Combined.cmd` or `Spaghettify.exe`. The `.sha256` asset provides its checksum. Open **Escape → Multiplayer → Local play** for multiplayer options.
+Download the [latest release (v0.4.0)](../../releases/latest) for Windows, Linux or macOS, extract the archive and follow the included instructions. On Windows, run `Launch-Combined.cmd` or `Spaghettify.exe`. Open **Escape → Multiplayer → Local play** for multiplayer options.
 
-**No ROM, extracted Mario Kart 64 game archive (`mk64.o2r`), saves, personal settings or logs are included.** Supply your own supported US Mario Kart 64 dump on first launch. The included `spaghetti.o2r` contains port resources and custom artwork. Keep this release's executable and resource archive together.
+**A supported US Mario Kart 64 ROM is required separately.** The release does not include the ROM, extracted game archive (`mk64.o2r`), saves, personal settings or logs. Keep the executable and the supplied port resource archive together.
 
-Windows x64 only. Release compilation succeeded; the latest changes have not had a fresh gameplay pass. Extended multiplayer and Battle AI remain experimental.
+Extended multiplayer, Battle AI and some added course features remain experimental. See the release notes for platform-specific details and testing status.
+
+Recent local development includes widescreen menu artwork and character-set switches; these changes are not yet part of a published release.
 
 ## Source and building
 
