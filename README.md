@@ -2,6 +2,14 @@
 
 Unofficial fork of [HarbourMasters/SpaghettiKart](https://github.com/HarbourMasters/SpaghettiKart). Original PC port and engine by HarbourMasters and the SpaghettiKart contributors; customization by Ricky Gameplays.
 
+## Screenshots
+
+![Player selection with expanded roster](docs/screenshots/player-select.png)
+
+![Amped Up track selection](docs/screenshots/amped-tracks.png)
+
+![Race with a large field of racers](docs/screenshots/large-race.png)
+
 ## Added features
 
 - **Up to 16 local players** in Grand Prix, VS and Battle, with optional bots filling race grids.
