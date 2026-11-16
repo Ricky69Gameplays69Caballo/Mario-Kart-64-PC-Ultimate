@@ -2,6 +2,8 @@
 
 Unofficial fork of [HarbourMasters/SpaghettiKart](https://github.com/HarbourMasters/SpaghettiKart). Original PC port and engine by HarbourMasters and the SpaghettiKart contributors; customization by Ricky Gameplays.
 
+Follow [Ricky Gameplays on YouTube](https://www.youtube.com/@Ricky_Gameplays-Caballo).
+
 ## Screenshots
 
 ![Player selection with expanded roster](docs/screenshots/player-select.png)
