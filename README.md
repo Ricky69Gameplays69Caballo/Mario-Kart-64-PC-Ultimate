@@ -42,3 +42,17 @@ Recent local development includes widescreen menu artwork and character-set swit
 ## Source and building
 
 Clone this repository with submodules and follow [the build guide](docs/BUILDING.md). The original project documentation and credits are preserved in [the upstream README](docs/UPSTREAM-README.md). The controller dependency patch is applied by CMake during configuration.
+
+## Credits
+
+- [HarbourMasters and SpaghettiKart contributors](https://github.com/HarbourMasters/SpaghettiKart) — original PC port and engine.
+- [Mario Kart 64 - Amped Up](https://gamebanana.com/mods/613207) — Litronom.
+- [Dragon Ball Kart 64](https://n64squid.com/homebrew/roms/dragon-ball-kart-64/) — ImmaVegeta.
+- [Mario Kart 64 Deluxe](https://gamebanana.com/mods/336637) — Reset.TV and contributors.
+- [Pokémon Kart 64](https://gamebanana.com/mods/604826) — shrugboat.
+- [GTA San Andreas Kart 2.0](https://gamebanana.com/mods/553919) — TokattaMusic; shared by snipertf22014.
+- [Simpson Kart 64](https://gamebanana.com/mods/553917) — Smashedbrothersgaming.
+- [Slasher Kart 64](https://gamebanana.com/mods/553911) — smashedbrothers7.
+- [Evangelion Kart 64](https://gamebanana.com/mods/644048).
+- [Evangelion Kart 64: Rebuild Edition](https://gamebanana.com/mods/644053) — Arian Ventura.
+- [Angry Birds Kart 64](https://gamebanana.com/mods/644055) — Arian Ventura.
