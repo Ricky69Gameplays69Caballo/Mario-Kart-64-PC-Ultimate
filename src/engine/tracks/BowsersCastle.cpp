@@ -225,7 +225,7 @@ void BowsersCastle::DrawTrackObjects(s32 cameraId) {
 void BowsersCastle::SomeSounds() {
 }
 
-void BowsersCastle::WhatDoesThisDo(Player* player, int8_t playerId) {
+void BowsersCastle::WhatDoesThisDo(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x29) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1D2)) {
         if (D_80165300[playerId] != 1) {
@@ -240,7 +240,7 @@ void BowsersCastle::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void BowsersCastle::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void BowsersCastle::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x29) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1D2)) {
         if (D_80165300[playerId] != 1) {
@@ -290,7 +290,7 @@ void BowsersCastle::SomeCollisionThing(Player *player, Vec3f arg1, Vec3f arg2, V
     func_8003E6EC(player, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
-void BowsersCastle::Waypoints(Player* player, int8_t playerId) {
+void BowsersCastle::Waypoints(Player* player, int16_t playerId) {
     s16 waypoint = gNearestPathPointByPlayerId[playerId];
     if ((waypoint >= 0x235) && (waypoint < 0x247)) {
         player->nearestPathPointId = 0x214;

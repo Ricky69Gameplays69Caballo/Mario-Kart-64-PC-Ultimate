@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <libultraship.h>
 #include <libultra/gbi.h>
 #include <vector>
@@ -183,10 +184,10 @@ void WarioStadium::SomeSounds() {
     func_800C9D80(D_8015F778, D_802B91C8, 0x5103700B);
 }
 
-void WarioStadium::WhatDoesThisDo(Player* player, int8_t playerId) {
+void WarioStadium::WhatDoesThisDo(Player* player, int16_t playerId) {
 }
 
-void WarioStadium::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void WarioStadium::WhatDoesThisDoAI(Player* player, int16_t playerId) {
 }
 
 void WarioStadium::CopyJumbotron(s32 ulx, s32 uly, s16 portionToDraw, u16* source) {
@@ -265,7 +266,21 @@ void WarioStadium::Draw(ScreenContext* arg0) {
 
     D_800DC5DC = 88;
     D_800DC5E0 = 72;
-    if (gActiveScreenMode == SCREEN_MODE_1P) {
+    const bool singlePlayer = gActiveScreenMode == SCREEN_MODE_1P;
+    // Keep the existing saved switch shared with Luigi Raceway.
+    const bool liveScreen = singlePlayer || CVarGetInteger("gMultiplayer.LuigiRacewayScreen", 1);
+    if (!liveScreen) {
+        if (!mJumbotronBlank) {
+            const char* tiles[] = {gTexture68272C, gTexture682928, gTexture682B24,
+                                   gTexture682D20, gTexture682F1C, gTexture683118};
+            for (const auto* tile : tiles)
+                std::fill_n((u16*) LOAD_ASSET_RAW(tile), 64 * 32, static_cast<u16>(0xFFFF));
+            mJumbotronBlank = true;
+        }
+    } else if (singlePlayer || mJumbotronFrame != gGlobalTimer || mJumbotronBlank) {
+        // The textures are shared by every view; capture only once per game frame.
+        mJumbotronFrame = gGlobalTimer;
+        mJumbotronBlank = false;
         prevFrame = (s16) sRenderedFramebuffer - 1;
         if (prevFrame < 0) {
             prevFrame = 2;

@@ -123,6 +123,9 @@ uint32_t OTRGetGameViewportHeight();
 uint32_t OTRCalculateCenterOfAreaFromRightEdge(int32_t center);
 uint32_t OTRCalculateCenterOfAreaFromLeftEdge(int32_t center);
 int32_t GameEngine_ResourceGetTexTypeByName(const char* name);
+int32_t GameEngine_GetLogicTicksPerFrame(int32_t normalTicks);
+int32_t GameEngine_IsExperimentalNativeRace(void);
+int32_t GameEngine_IsExperimentalNativePresentation(void);
 #ifdef __cplusplus
 }
 #endif

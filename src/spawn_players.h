@@ -6,7 +6,7 @@
 
 /* Function Prototypes */
 /** @cond */
-void spawn_player(Player*, s8, f32, f32, f32, f32, u16, s32);
+void spawn_player(Player*, s16, f32, f32, f32, f32, u16, s32);
 void func_80039AE4(void);
 void func_80039DA4(void);
 void spawn_and_set_player_spawns(void);
@@ -23,7 +23,7 @@ void func_8003BE30(void);
 void position_ceremony_spectators(void);
 void func_8003C0F0(void);
 void func_8003CD78(void);
-void func_8003CD98(Player*, Camera*, s8, s8);
+void func_8003CD98(Player*, Camera*, s16, s8);
 void spawn_players_and_cameras(void);
 void spawn_single_player_camera(u32 mode);
 void spawn_multiplayer_cameras(u32 mode);

@@ -98,7 +98,8 @@ struct Unk_8018EFD8 {
     /* 0x31 */ // u8 compilerPadding01[3];
     /* 0x34 */ f32 unk34;
     /* 0x38 */ u32 soundBits;
-}; // size = 0x3C
+    s16 voiceRacer; // -1 for regular spatial effects
+};
 
 // This is almost certainly an expanded version of SoundCharacteristics from SM64
 struct SoundCharacteristics {
@@ -198,8 +199,8 @@ typedef struct {
 
 /** @cond */
 
-void func_800C94A4(u8);
-void func_800CADD0(u8, f32);
+void func_800C94A4(u16);
+void func_800CADD0(u16, f32);
 void func_800C13F0(void);
 void audio_reset_session_eu(OSMesg);
 f32 func_800C1480(u8, u8);
@@ -277,18 +278,18 @@ void play_sound2(s32);
 void play_sequence(u16);
 void play_sequence2(u16);
 void func_800C8F44(u8);
-void func_800C8F80(u8, u32);
+void func_800C8F80(u16, u32);
 
-void func_800C9018(u8, u32);
-void func_800C9060(u8, u32);
-void func_800C90F4(u8, u32);
-void func_800C9250(u8);
-void func_800C92CC(u8, u32);
-void func_800C94A4(u8);
+void func_800C9018(u16, u32);
+void func_800C9060(u16, u32);
+void func_800C90F4(u16, u32);
+void func_800C9250(u16);
+void func_800C92CC(s32, u32);
+void func_800C94A4(u16);
 void func_800C97C4(u8);
 void func_800C98B8(Vec3f, Vec3f, u32);
 void func_800C99E0(Vec3f, s32);
-void func_800C9A88(u8);
+void func_800C9A88(u16);
 void func_800C9D0C(u8);
 void func_800C9D80(Vec3f, Vec3f, u32);
 void func_800C9EF4(Vec3f, u32);
@@ -300,8 +301,8 @@ void func_800CA0B8(void);
 void func_800CA0CC(void);
 void func_800CA0E4(void);
 void Audio_StopExpandedRaceSounds(void);
-void func_800CA118(u8);
-void func_800CA24C(u8);
+void func_800CA118(u16);
+void func_800CA24C(u16);
 void func_800CA270(void);
 void func_800CA288(u8, s8);
 void func_800CA2B8(u8);
@@ -311,15 +312,15 @@ void func_800CA330(u8);
 void func_800CA388(u8);
 void play_sequences(u16, u16);
 void func_800CA49C(u8);
-void func_800CA59C(u8);
-void func_800CA984(u8);
-void func_800CAACC(u8);
+void func_800CA59C(u16);
+void func_800CA984(u16);
+void func_800CAACC(u16);
 void func_800CAB4C(u8);
 void func_800CAC08(void);
 void func_800CAC60(s32);
 void func_800CAD40(s32);
-void func_800CAEC4(u8, f32);
-void func_800CAFC0(u8);
+void func_800CAEC4(u16, f32);
+void func_800CAFC0(u16);
 
 void func_800CB134(void);
 void func_800CB14C(void);
@@ -435,6 +436,8 @@ extern s8 D_800EA16C;
 
 extern OSMesgQueue* D_800EA3B0;
 extern OSMesgQueue* D_800EA3B4;
+
+void Audio_PlayNearbyBotItem(s32 racerId, u32 soundBits);
 
 /** @endcond */
 

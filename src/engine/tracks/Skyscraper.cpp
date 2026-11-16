@@ -142,9 +142,9 @@ void Skyscraper::InitTrackObjects() {}
 
 void Skyscraper::SomeSounds() {}
 
-void Skyscraper::WhatDoesThisDo(Player* player, int8_t playerId) {}
+void Skyscraper::WhatDoesThisDo(Player* player, int16_t playerId) {}
 
-void Skyscraper::WhatDoesThisDoAI(Player* player, int8_t playerId) {}
+void Skyscraper::WhatDoesThisDoAI(Player* player, int16_t playerId) {}
 
 void Skyscraper::Draw(ScreenContext* arg0) {
     set_track_light_direction(D_800DC610, D_802B87D4, 0, 1);
@@ -171,7 +171,7 @@ void Skyscraper::Draw(ScreenContext* arg0) {
 
 void Skyscraper::DrawCredits() {}
 
-void Skyscraper::Waypoints(Player* player, int8_t playerId) {
+void Skyscraper::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = 0;
 }
 

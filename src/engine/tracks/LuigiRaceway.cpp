@@ -128,7 +128,80 @@ void LuigiRaceway::Load() {
     }
     parse_track_displaylists((TrackSections*) LOAD_ASSET_RAW(d_course_luigi_raceway_addr));
     func_80295C6C();
+    PrepareFirstTurnDisplayLists();
     Props.WaterLevel = gTrackMinY - 10.0f;
+}
+
+void LuigiRaceway::PrepareFirstTurnDisplayLists() {
+    const auto displayListHash = [](const char* asset) {
+        return ResourceGetCrcByName(asset + sizeof("__OTR__") - 1);
+    };
+    const uint64_t distantGrass = displayListHash(d_course_luigi_raceway_packed_dl_A558);
+    const uint64_t distantSand = displayListHash(d_course_luigi_raceway_packed_dl_B408);
+    const uint64_t grass = displayListHash(d_course_luigi_raceway_packed_dl_2280);
+    const uint64_t sand = displayListHash(d_course_luigi_raceway_packed_dl_3350);
+    const char* firstTurnGround[] = {
+        d_course_luigi_raceway_packed_dl_6EF0, // Road approaching the bend.
+        d_course_luigi_raceway_packed_dl_A4F8,
+        d_course_luigi_raceway_packed_dl_B678,
+        d_course_luigi_raceway_packed_dl_2280,
+        d_course_luigi_raceway_packed_dl_3350,
+        d_course_luigi_raceway_packed_dl_A930,
+        d_course_luigi_raceway_packed_dl_B198,
+    };
+    static_assert(SectionDisplayListCount == ARRAY_COUNT(luigi_raceway_dls));
+    std::copy(std::begin(luigi_raceway_dls), std::end(luigi_raceway_dls), mSectionDisplayLists.begin());
+    for (size_t index = 0; index < mSectionDisplayLists.size(); ++index) {
+        const size_t section = index / 4 + 1;
+        if (section > 10 && section < 28) continue;
+        const bool startView = index % 4 == NORTH && (section <= 3 || section >= 28);
+        const char* name = luigi_raceway_dls[index];
+        const auto* original = static_cast<const Gfx*>(ResourceGetDataByName(name));
+        const size_t count = ResourceGetSizeByName(name) / sizeof(Gfx);
+        if (!original || count == 0) continue;
+
+        auto& commands = mFirstTurnDisplayLists[index];
+        commands.assign(original, original + count);
+        bool changed = false;
+        std::vector<uint64_t> drawnMeshes;
+        for (size_t i = 0; i + 1 < count; ++i) {
+            const uint32_t opcode = GFX_GET_OPCODE(commands[i].words.w0) >> 24;
+            if (opcode == G_MARKER) {
+                ++i;
+            } else if (opcode == G_DL_OTR_HASH) {
+                auto& reference = commands[++i].words;
+                const uint64_t originalHash = (uint64_t(reference.w0) << 32) | reference.w1;
+                // The distant meshes overlap on the same plane. The detailed
+                // pair shares a boundary and uses the stock collision geometry.
+                const uint64_t hash = originalHash == distantGrass ? grass :
+                                      originalHash == distantSand ? sand : originalHash;
+                if (hash != originalHash) {
+                    reference.w0 = static_cast<uint32_t>(hash >> 32);
+                    reference.w1 = static_cast<uint32_t>(hash);
+                    changed = true;
+                }
+                drawnMeshes.push_back(hash);
+            }
+        }
+        if (startView) {
+            for (const char* mesh : firstTurnGround) {
+                const uint64_t hash = displayListHash(mesh);
+                if (std::find(drawnMeshes.begin(), drawnMeshes.end(), hash) != drawnMeshes.end()) {
+                    continue;
+                }
+                Gfx call{};
+                call.words.w0 = G_DL_OTR_HASH << 24;
+                Gfx reference{};
+                reference.words.w0 = static_cast<uint32_t>(hash >> 32);
+                reference.words.w1 = static_cast<uint32_t>(hash);
+                commands.insert(commands.end() - 1, {call, reference});
+                changed = true;
+            }
+        }
+        if (changed) {
+            mSectionDisplayLists[index] = reinterpret_cast<const char*>(commands.data());
+        }
+    }
 }
 
 void LuigiRaceway::BeginPlay() {
@@ -167,7 +240,7 @@ void LuigiRaceway::SomeSounds() {
     func_800C9D80(D_8015F748, D_802B91C8, 0x5103700B);
 }
 
-void LuigiRaceway::WhatDoesThisDo(Player* player, int8_t playerId) {
+void LuigiRaceway::WhatDoesThisDo(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x145) && ((s16) gNearestPathPointByPlayerId[playerId] < 0x18B)) {
         if (D_80165300[playerId] != 1) {
             func_800CA288(playerId, 0x55);
@@ -181,7 +254,7 @@ void LuigiRaceway::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void LuigiRaceway::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void LuigiRaceway::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x145) && ((s16) gNearestPathPointByPlayerId[playerId] < 0x18B)) {
         if (D_80165300[playerId] != 1) {
             func_800CA2E4(playerId, 0x55);
@@ -274,7 +347,7 @@ void LuigiRaceway::Draw(ScreenContext* arg0) {
     gDPSetCombineMode(gDisplayListHead++, G_CC_MODULATEIA, G_CC_MODULATEIA);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_OPA_SURF, G_RM_AA_ZB_OPA_SURF2);
 
-    render_track_sections(luigi_raceway_dls, arg0, sizeof(luigi_raceway_dls) / sizeof(luigi_raceway_dls[0]));
+    render_track_sections(mSectionDisplayLists.data(), arg0, mSectionDisplayLists.size());
 
     gDPSetCombineMode(gDisplayListHead++, G_CC_MODULATEIDECALA, G_CC_MODULATEIDECALA);
     gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_TEX_EDGE, G_RM_AA_ZB_TEX_EDGE2);

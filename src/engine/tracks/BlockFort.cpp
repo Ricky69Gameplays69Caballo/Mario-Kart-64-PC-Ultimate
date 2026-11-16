@@ -140,6 +140,6 @@ void BlockFort::Draw(ScreenContext* arg0) {
     gSPDisplayList(gDisplayListHead++, (Gfx*) d_course_block_fort_packed_dl_15C0);
 }
 
-void BlockFort::Waypoints(Player* player, int8_t playerId) {
+void BlockFort::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = 0;
 }

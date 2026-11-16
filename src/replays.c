@@ -16,6 +16,10 @@
 #include "code_80057C60.h"
 #include "kart_dma.h"
 #include "port/Game.h"
+#include "port/Engine.h"
+#include "port/NativeFrameClock.h"
+#include <stdio.h>
+#include <string.h>
 #include "courses/staff_ghost_data.h"
 
 u8* sReplayGhostBuffer;
@@ -23,6 +27,31 @@ size_t sReplayGhostBufferSize;
 s16 D_80162D86;
 
 static u16 sPlayerGhostButtonsPrev;
+// Replay input is encoded in 30 Hz frames. Keep the last decoded held
+// controls between those boundaries when the race runs at native display rate.
+typedef struct {
+    s16 stickX, stickY;
+    u16 buttons;
+    u8 valid;
+} NativeReplayInput;
+static NativeReplayInput sNativeReplayInputs[3];
+
+static void NativeReplayCapture(int index, struct Controller* controller) {
+    sNativeReplayInputs[index].stickX = controller->rawStickX;
+    sNativeReplayInputs[index].stickY = controller->rawStickY;
+    sNativeReplayInputs[index].buttons = controller->button;
+    sNativeReplayInputs[index].valid = 1;
+}
+
+static void NativeReplayHold(int index, struct Controller* controller) {
+    const NativeReplayInput* input = &sNativeReplayInputs[index];
+    if (!input->valid) return;
+    controller->rawStickX = input->stickX;
+    controller->rawStickY = input->stickY;
+    controller->button = input->buttons;
+    controller->buttonPressed = 0;
+    controller->buttonDepressed = 0;
+}
 static u32 sPlayerGhostFramesRemaining;
 static s16 sPlayerGhostReplayIdx;
 u32* sPlayerGhostReplay;
@@ -39,6 +68,7 @@ static u32* sPostTTReplay;
 
 static s16 sPlayerInputIdx;
 static u32* sPlayerInputs;
+static u32 sBenchmarkGhost[0x1001];
 
 uintptr_t staff_ghost_track_ptr;
 StaffGhost* D_80162DC4;
@@ -167,6 +197,19 @@ void func_800052A4(void) {
 }
 
 void func_80005310(void) {
+    memset(sNativeReplayInputs, 0, sizeof(sNativeReplayInputs));
+    if (gGamestate == RACING && !gDemoMode && gModeSelection == TIME_TRIALS && ExtraMaps_Page()) {
+        bPlayerGhostDisabled = 1;
+        bCourseGhostDisabled = 1;
+        gPostTimeTrialReplayCannotSave = 1;
+        D_80162DD8 = 1;
+        D_80162DDC = 0;
+        gPauseTriggered = 0;
+        sPlayerInputs = (u32*) &D_802BFB80.arraySize8[0][D_80162DCC][3];
+        sPlayerInputs[0] = -1;
+        sPlayerInputIdx = 0;
+        return;
+    }
     if (gGamestate == RACING && !gDemoMode && gModeSelection == TIME_TRIALS && MultiplayerOptions_SixteenEnabled()) {
         gPostTimeTrialReplayCannotSave = 1;
         return;
@@ -212,6 +255,23 @@ void func_80005310(void) {
             }
         }
     }
+    if (CVarGetInteger("gExperimentalReplayBenchmark", 0) &&
+        CVarGetInteger("gExperimentalReplayGhostTest", 0) && gModeSelection == TIME_TRIALS) {
+        memset(sBenchmarkGhost, 0, sizeof(sBenchmarkGhost));
+        sBenchmarkGhost[0] = 0x801e0028; // A, stick right, 31 replay frames
+        sBenchmarkGhost[1] = 0x401e00d8; // B, stick left, 31 replay frames
+        if (CVarGetInteger("gExperimentalReplayGhostTest", 0) == 2) {
+            sBenchmarkGhost[0] = 0x80000028;
+            sBenchmarkGhost[1] = 0x400000d8;
+        } else if (CVarGetInteger("gExperimentalReplayGhostTest", 0) == 3) {
+            for (int i = 0; i < 6; ++i) sBenchmarkGhost[i] = 0x80ff0000;
+        }
+        sPlayerGhostReplay = sBenchmarkGhost;
+        sPlayerGhostReplayIdx = 0;
+        sPlayerGhostFramesRemaining = sBenchmarkGhost[0] & 0x00ff0000;
+        sPlayerGhostButtonsPrev = 0;
+        bPlayerGhostDisabled = 0;
+    }
 }
 
 /* Special handling for buttons saved in replays. The listing of L_TRIG here is odd
@@ -243,6 +303,7 @@ void process_post_time_trial_replay(void) {
     s16 buttons = 0;
 
     if (sPostTTReplayIdx >= 0x1000) {
+        sNativeReplayInputs[2].valid = 0;
         gPlayerOne->type = PLAYER_CINEMATIC_MODE | PLAYER_START_SEQUENCE | PLAYER_CPU;
         return;
     }
@@ -284,6 +345,7 @@ void process_post_time_trial_replay(void) {
     gControllerEight->buttonDepressed = (sPostTTButtonsPrev & (buttons ^ sPostTTButtonsPrev)) | buttons_temp;
     sPostTTButtonsPrev = buttons;
     gControllerEight->button = buttons;
+    if (GameEngine_IsExperimentalNativeRace()) NativeReplayCapture(2, gControllerEight);
 
     if (sPostTTFramesRemaining == 0) {
         sPostTTReplayIdx++;
@@ -303,6 +365,7 @@ void process_course_ghost_replay(void) {
     s16 buttons = 0;
 
     if (sCourseGhostReplayIdx >= 0x1000) {
+        sNativeReplayInputs[1].valid = 0;
         func_80005AE8(gPlayerThree);
         return;
     }
@@ -345,6 +408,7 @@ void process_course_ghost_replay(void) {
     gControllerSeven->buttonDepressed = (sButtonsPrevCourseGhost & (buttons ^ sButtonsPrevCourseGhost)) | buttonsTemp;
     sButtonsPrevCourseGhost = buttons;
     gControllerSeven->button = buttons;
+    if (GameEngine_IsExperimentalNativeRace()) NativeReplayCapture(1, gControllerSeven);
     if (sCourseGhostFramesRemaining == 0) {
         sCourseGhostReplayIdx++;
         sCourseGhostFramesRemaining = (s32) (sCourseGhostReplay[sCourseGhostReplayIdx] & REPLAY_FRAME_COUNTER);
@@ -363,6 +427,7 @@ void process_player_ghost_replay(void) {
     s16 buttons = 0;
 
     if (sPlayerGhostReplayIdx >= 0x1000) {
+        sNativeReplayInputs[0].valid = 0;
         func_80005AE8(gPlayerTwo);
         return;
     }
@@ -405,6 +470,14 @@ void process_player_ghost_replay(void) {
     gControllerSix->buttonDepressed = (sPlayerGhostButtonsPrev & (buttons ^ sPlayerGhostButtonsPrev)) | buttons_temp;
     sPlayerGhostButtonsPrev = buttons;
     gControllerSix->button = buttons;
+    if (GameEngine_IsExperimentalNativeRace()) NativeReplayCapture(0, gControllerSix);
+    if (CVarGetInteger("gExperimentalReplayGhostTest", 0)) {
+        static unsigned decoded;
+        if (++decoded % 15 == 0) {
+            printf("REPLAY_GHOST_DECODE step=%u idx=%d x=%d buttons=%x\n", decoded,
+                   sPlayerGhostReplayIdx, gControllerSix->rawStickX, gControllerSix->button);
+        }
+    }
 
     if (sPlayerGhostFramesRemaining == 0) {
         sPlayerGhostReplayIdx++;
@@ -569,7 +642,16 @@ void func_80005E6C(void) {
     }
 }
 
-void replays_loop(void) {
+static void replays_step(void) {
+    if (CVarGetInteger("gExperimentalReplayBenchmark", 0)) {
+        static unsigned benchmarkSteps;
+        if (++benchmarkSteps % 30 == 0 && sPlayerInputs) {
+            printf("REPLAY_BENCH steps=%u time=%.4f idx=%d entry=%08x cannotSave=%d ghostIdx=%d ghostFrames=%u ghostX=%d ghostButtons=%x\n", benchmarkSteps,
+                   gCourseTimer, sPlayerInputIdx, sPlayerInputs[sPlayerInputIdx], gPostTimeTrialReplayCannotSave,
+                   sPlayerGhostReplayIdx, sPlayerGhostFramesRemaining, gControllerSix->rawStickX, gControllerSix->button);
+            fflush(stdout);
+        }
+    }
     if (D_8015F890 == 1) {
         func_80005E6C();
         return;
@@ -581,4 +663,51 @@ void replays_loop(void) {
     /* This only gets triggered when the previous if-statements are not met
        Seems like just for pausing */
     gPostTimeTrialReplayCannotSave = 1;
+}
+
+void replays_loop(void) {
+    if (!GameEngine_IsExperimentalNativeRace()) {
+        replays_step();
+        return;
+    }
+    if (gNativeVisualSteps == 0) {
+        NativeReplayHold(0, gControllerSix);
+        NativeReplayHold(1, gControllerSeven);
+        NativeReplayHold(2, gControllerEight);
+        if (CVarGetInteger("gExperimentalReplayGhostTest", 0) && sNativeReplayInputs[0].valid) {
+            static unsigned heldFrames;
+            if (++heldFrames % 120 == 0) {
+                printf("REPLAY_GHOST_HOLD x=%d buttons=%x pressed=%x\n", gControllerSix->rawStickX,
+                       gControllerSix->button, gControllerSix->buttonPressed);
+            }
+        }
+        return;
+    }
+    struct Controller* replayControllers[3] = { gControllerSix, gControllerSeven, gControllerEight };
+    u16 pressed[3] = { 0 }, released[3] = { 0 };
+    const u16 replayButtons = A_BUTTON | B_BUTTON | Z_TRIG | R_TRIG | L_TRIG;
+    for (uint32_t step = 0; step < gNativeVisualSteps; ++step) {
+        replays_step();
+        for (int i = 0; i < 3; ++i) {
+            if (sNativeReplayInputs[i].valid) {
+                pressed[i] |= replayControllers[i]->buttonPressed & replayButtons;
+                released[i] |= replayControllers[i]->buttonDepressed & replayButtons;
+            }
+        }
+    }
+    // If a stall crossed several recorded frames, retain every replay button
+    // edge until the simulation consumes this frame, even if the final replay
+    // update no longer holds that button.
+    for (int i = 0; i < 3; ++i) {
+        if (sNativeReplayInputs[i].valid) {
+            replayControllers[i]->buttonPressed |= pressed[i];
+            replayControllers[i]->buttonDepressed |= released[i];
+        }
+    }
+    if (CVarGetInteger("gExperimentalReplayGhostTest", 0) == 2 && gNativeVisualSteps > 1 &&
+        (pressed[0] || released[0])) {
+        printf("REPLAY_GHOST_MULTI steps=%u held=%x pressed=%x released=%x\n", gNativeVisualSteps,
+               gControllerSix->button, gControllerSix->buttonPressed, gControllerSix->buttonDepressed);
+        fflush(stdout);
+    }
 }

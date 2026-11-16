@@ -56,6 +56,8 @@ typedef struct Matrix {
 private:
     std::unique_ptr<Track> mTrack;
     Cup* CurrentCup;
+    std::array<std::unique_ptr<Cup>, 4> ExtraCups;
+    bool ExtraCupPage = false;
 
 public:
     static World* Instance;
@@ -93,6 +95,11 @@ public:
     void Reset(void); // Sets OObjects or AActors static member variables back to default values
 
     void AddCup(Cup* cup);
+    void InitExtraCups();
+    bool ExtraCupsAvailable() const;
+    bool IsExtraCupPage() const { return ExtraCupPage; }
+    void SetExtraCupPage(bool enabled);
+    Cup* GetRaceCup(size_t index);
     void SetCurrentCup(Cup* cup);
     Cup* GetCurrentCup() {
         return CurrentCup;

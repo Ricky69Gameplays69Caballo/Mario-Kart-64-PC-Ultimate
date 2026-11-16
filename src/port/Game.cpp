@@ -9,6 +9,15 @@
 #include <fast/Fast3dWindow.h>
 #include <memory>
 #include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <algorithm>
+#include <map>
+#include <string>
+#include <tuple>
+#include <limits>
+#include <spdlog/sinks/rotating_file_sink.h>
 #include "engine/World.h"
 #include "engine/AllTracks.h"
 
@@ -18,6 +27,7 @@
 
 #include "engine/TrainCrossing.h"
 #include "engine/objects/BombKart.h"
+#include "engine/objects/HotAirBalloon.h"
 #include "engine/objects/Lakitu.h"
 
 #include "engine/Smoke.h"
@@ -41,8 +51,6 @@
 #include <locale.h>
 #include <windows.h>
 #include <DbgHelp.h>
-#include <spdlog/sinks/rotating_file_sink.h>
-#include <chrono>
 #include <csignal>
 #include <exception>
 #include <filesystem>
@@ -57,6 +65,7 @@ extern "C" {
 #include "racing/collision.h"
 #include "menus.h"
 #include "update_objects.h"
+#include "profiler.h"
 #include "spawn_players.h"
 #include "src/enhancements/collision_viewer.h"
 #include "code_800029B0.h"
@@ -64,6 +73,130 @@ extern "C" {
 #include "code_80057C60.h"
 #include "objects.h"
 // #include "engine/wasm.h"
+}
+
+bool gAudioDiagnosticsEnabled = false;
+
+namespace {
+using AudioEvent = std::tuple<std::string_view, u32, s32, s32, s32>;
+std::map<AudioEvent, unsigned> sAudioEvents;
+std::shared_ptr<spdlog::logger> sAudioTrace;
+unsigned sAudioTraceOmitted = 0;
+
+// The mixer thread writes this data. The game thread reads and clears it
+// between EndAudioFrame and the next StartAudioFrame.
+struct AudioBufferStats {
+    unsigned blocks = 0;
+    unsigned empty = 0;
+    unsigned skipped = 0;
+    int minimum = std::numeric_limits<int>::max();
+    int maximum = 0;
+    int target = 0;
+    unsigned generated = 0;
+};
+AudioBufferStats sAudioBufferStats;
+int sAudioFirstFrame = 0;
+
+void FlushAudioDiagnostics() {
+    if (!sAudioTrace) return;
+    const auto& stats = sAudioBufferStats;
+    if (!sAudioEvents.empty() || stats.blocks) {
+        const int racers = LocalMP_RacerCount();
+        sAudioTrace->info("frames={}-{} game={} race={} mode={} course={} humans={} racers={} race_time={:.2f} "
+                          "sound_mode={} music_seq={} master_volume={:.2f}",
+                          sAudioFirstFrame, gGlobalTimer, gGamestate, gRaceState, gModeSelection, gCurrentCourseId,
+                          LocalMP_Count(), racers, gCourseTimer, gSoundMode, gCurrentMusicSeq,
+                          CVarGetFloat("gGameMasterVolume", 1.0f));
+        for (const auto& [event, count] : sAudioEvents) {
+            const auto& [name, sound, player, listener, channel] = event;
+            sAudioTrace->info("  {} sound=0x{:08X} player={} listener={} channel={} count={}",
+                              name, sound, player, listener, channel, count);
+        }
+        if (stats.blocks) {
+            sAudioTrace->info("  mixer blocks={} buffered_min={} buffered_max={} target={} empty_before_mix={} "
+                              "generated_samples={} skipped_fast_forward={}",
+                              stats.blocks, stats.minimum, stats.maximum, stats.target, stats.empty,
+                              stats.generated, stats.skipped);
+        }
+        if (sAudioTraceOmitted) sAudioTrace->warn("  omitted_events={}", sAudioTraceOmitted);
+    }
+    sAudioTrace->flush();
+    sAudioEvents.clear();
+    sAudioTraceOmitted = 0;
+    sAudioBufferStats = {};
+    sAudioFirstFrame = gGlobalTimer;
+}
+
+void TickAudioDiagnostics() {
+    static auto lastWrite = std::chrono::steady_clock::time_point{};
+    static int lastGame = -1, lastRace = -1, lastCourse = -1;
+    static bool openFailed = false;
+    if (CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0)) {
+        gAudioDiagnosticsEnabled = false;
+        sAudioTrace.reset();
+        sAudioEvents.clear();
+        sAudioTraceOmitted = 0;
+        sAudioBufferStats = {};
+        openFailed = false;
+        return;
+    }
+    const bool enabled = CVarGetInteger(CVAR_ADVANCED_AUDIO_DEBUGGING, 0) != 0;
+    if (!enabled) {
+        if (gAudioDiagnosticsEnabled) {
+            FlushAudioDiagnostics();
+            sAudioTrace->info("Advanced audio debugging disabled");
+            sAudioTrace.reset();
+            gAudioDiagnosticsEnabled = false;
+        }
+        openFailed = false;
+        return;
+    }
+    if (openFailed) return;
+    const auto now = std::chrono::steady_clock::now();
+    if (!sAudioTrace) {
+        try {
+            const auto path = Ship::Context::GetPathRelativeToAppDirectory("logs/audio-debug.log");
+            auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(path, 4 * 1024 * 1024, 3);
+            sAudioTrace = std::make_shared<spdlog::logger>("combined-audio-debug", sink);
+            sAudioTrace->info("Advanced audio debugging enabled. Player and listener IDs are zero-based; -1 means unavailable.");
+            sAudioTrace->flush();
+        } catch (const std::exception& error) {
+            openFailed = true;
+            SPDLOG_ERROR("Could not start advanced audio debugging: {}", error.what());
+            return;
+        }
+        gAudioDiagnosticsEnabled = true;
+        lastWrite = now;
+        sAudioFirstFrame = gGlobalTimer;
+    }
+    if (now - lastWrite >= std::chrono::seconds(1) ||
+        lastGame != gGamestate || lastRace != gRaceState || lastCourse != gCurrentCourseId) {
+        FlushAudioDiagnostics();
+        lastWrite = now;
+        lastGame = gGamestate;
+        lastRace = gRaceState;
+        lastCourse = gCurrentCourseId;
+    }
+}
+}
+
+extern "C" void AudioDiagnostics_Record(const char* event, u32 sound, s32 player, s32 listener, s32 channel) {
+    const AudioEvent key{event, sound, player, listener, channel};
+    auto entry = sAudioEvents.find(key);
+    if (entry != sAudioEvents.end()) ++entry->second;
+    else if (sAudioEvents.size() < 2048) sAudioEvents.emplace(key, 1);
+    else ++sAudioTraceOmitted;
+}
+
+extern "C" void AudioDiagnostics_RecordBuffer(s32 buffered, s32 target, s32 generated, bool fastForward) {
+    auto& stats = sAudioBufferStats;
+    ++stats.blocks;
+    stats.empty += buffered <= 0;
+    stats.skipped += fastForward;
+    stats.minimum = std::min(stats.minimum, buffered);
+    stats.maximum = std::max(stats.maximum, buffered);
+    stats.target = target;
+    stats.generated += generated;
 }
 
 #ifdef _WIN32
@@ -90,6 +223,60 @@ void DiagnosticSnapshot(char* buffer, size_t capacity) {
            gGamestate, gGamestateNext, gRaceState, gModeSelection, gCurrentCourseId,
            humans, racers, LocalMP_IsActive(), LocalMP_RaceResultsOpen(), gIsGamePaused);
     if (gGamestate != RACING) return;
+    if (CVarGetInteger("gDiagnostics.DetailedCrashLogging", 0)) {
+        if (gRaceState == RACE_IN_PROGRESS && !gIsGamePaused) {
+            double simulation, displayList, graphics;
+            if (profiler_get_last_game_frame_ms(&simulation, &displayList, &graphics)) {
+                append("Frame timing (ms): simulation=%.2f display_list=%.2f graphics_and_present=%.2f\n",
+                       simulation, displayList, graphics);
+            }
+            const auto context = Ship::Context::GetRawInstance();
+            if (auto window = std::dynamic_pointer_cast<Fast::Fast3dWindow>(context->GetWindow())) {
+                if (auto timing = window->GetLastPresentationTiming()) {
+                    append("Last rendered frame (ms): draw_submission=%.2f finalize_and_present=%.2f\n",
+                           timing->drawMs, timing->finalizeAndPresentMs);
+                }
+            }
+        }
+        int activeRacers = 0;
+        int pending = 0;
+        int struck = 0;
+        int shrunk = 0;
+        for (int i = 0; i < std::clamp(racers, 0, NUM_RACERS); ++i) {
+            const Player& racer = gPlayers[i];
+            if (!(racer.type & PLAYER_EXISTS)) continue;
+            ++activeRacers;
+            pending += (racer.triggers & LIGHTNING_STRIKE_TRIGGER) != 0;
+            if (racer.effects & LIGHTNING_EFFECT) {
+                ++struck;
+                shrunk += racer.size < 1.0f;
+            }
+        }
+        append("Race grid: active=%d total=%d\n", activeRacers, racers);
+        if (pending || struck) {
+            append("Lightning field: pending=%d struck=%d shrunk=%d racers=%d\n", pending, struck, shrunk, racers);
+        }
+        append("Lakitu render gates: draw_objects=%d hud_disabled=%d object_render_blocked=%d\n",
+               CVarGetInteger("gDrawObjects", 1), gHUDDisable, D_8018D22C);
+        append("Object pool: used=%d capacity=%d\n", func_80071FBC(), OBJECT_LIST_SIZE);
+        if (const auto* world = GetWorld()) {
+            for (int player = 0; player < std::clamp(humans, 0, MAX_HUMAN_PLAYERS); ++player) {
+                const auto entry = world->Lakitus.find(player);
+                if (entry != world->Lakitus.end() && entry->second) {
+                    const auto state = entry->second->DiagnosticState();
+                    append("  Lakitu %s\n", state.c_str());
+                } else {
+                    append("  Lakitu player=%d not spawned\n", player + 1);
+                }
+            }
+            for (const auto& object : world->Objects) {
+                if (const auto* balloon = dynamic_cast<const OHotAirBalloon*>(object.get())) {
+                    const auto state = balloon->DiagnosticState();
+                    append("  Hot-air balloon %s\n", state.c_str());
+                }
+            }
+        }
+    }
     for (int player = 0; player < std::clamp(racers, 0, NUM_RACERS); ++player) {
         const Player& racer = gPlayers[player];
         const int item = player < humans && player < MAX_HUMAN_PLAYERS ? gItemWindowObjectByPlayerId[player] : -1;
@@ -118,6 +305,7 @@ void DiagnosticSnapshot(char* buffer, size_t capacity) {
 }
 
 LONG WINAPI DiagnosticCrashFilter(EXCEPTION_POINTERS* exception) {
+    if (CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0)) return EXCEPTION_EXECUTE_HANDLER;
     if (InterlockedCompareExchange(&sWritingCrash, 1, 0) != 0) return EXCEPTION_EXECUTE_HANDLER;
     SYSTEMTIME time;
     GetSystemTime(&time);
@@ -125,17 +313,22 @@ LONG WINAPI DiagnosticCrashFilter(EXCEPTION_POINTERS* exception) {
     swprintf_s(name, L"crash-%04u%02u%02u-%02u%02u%02u-%03u-p%lu", time.wYear, time.wMonth,
                time.wDay, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds, GetCurrentProcessId());
     const std::wstring prefix = sCrashDirectory + L"/" + name;
-    HANDLE dump = CreateFileW((prefix + L".dmp").c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const bool detailed = CVarGetInteger("gDiagnostics.DetailedCrashLogging", 0) != 0;
     BOOL dumpWritten = FALSE;
-    DWORD dumpError = GetLastError();
-    if (dump != INVALID_HANDLE_VALUE) {
-        MINIDUMP_EXCEPTION_INFORMATION info{GetCurrentThreadId(), exception, FALSE};
-        dumpWritten = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), dump,
-            static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithThreadInfo), &info, nullptr, nullptr);
-        dumpError = dumpWritten ? ERROR_SUCCESS : GetLastError();
-        FlushFileBuffers(dump);
-        CloseHandle(dump);
+    DWORD dumpError = ERROR_SUCCESS;
+    if (detailed) {
+        HANDLE dump = CreateFileW((prefix + L".dmp").c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                  CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (dump != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION info{GetCurrentThreadId(), exception, FALSE};
+            dumpWritten = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), dump,
+                static_cast<MINIDUMP_TYPE>(MiniDumpNormal | MiniDumpWithThreadInfo), &info, nullptr, nullptr);
+            dumpError = dumpWritten ? ERROR_SUCCESS : GetLastError();
+            FlushFileBuffers(dump);
+            CloseHandle(dump);
+        } else {
+            dumpError = GetLastError();
+        }
     }
     HANDLE report = CreateFileW((prefix + L".txt").c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                 CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -145,7 +338,7 @@ LONG WINAPI DiagnosticCrashFilter(EXCEPTION_POINTERS* exception) {
             "Combined Windows crash\nUTC %04u-%02u-%02u %02u:%02u:%02u\nexception=0x%08lx address=%p thread=%lu dump=%s error=%lu\n",
             time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond,
             exception->ExceptionRecord->ExceptionCode, exception->ExceptionRecord->ExceptionAddress,
-            GetCurrentThreadId(), dumpWritten ? "written" : "failed", dumpError);
+            GetCurrentThreadId(), detailed ? (dumpWritten ? "written" : "failed") : "disabled", dumpError);
         DiagnosticSnapshot(text + size, sizeof(text) - size);
         DWORD written;
         WriteFile(report, text, static_cast<DWORD>(strlen(text)), &written, nullptr);
@@ -172,6 +365,7 @@ LONG WINAPI DiagnosticCrashFilter(EXCEPTION_POINTERS* exception) {
 }
 
 void InitCrashDiagnostics() {
+    if (CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0) || sDiagnostics) return;
     sCrashDirectory = std::filesystem::path(Ship::Context::GetPathRelativeToAppDirectory("logs")).wstring();
     std::filesystem::create_directories(sCrashDirectory);
     auto sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
@@ -180,14 +374,20 @@ void InitCrashDiagnostics() {
     sDiagnostics = std::make_shared<spdlog::logger>("combined-diagnostics", sink);
     sDiagnostics->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
     sDiagnostics->flush_on(spdlog::level::info);
-    sDiagnostics->info("Crash diagnostics enabled; pid={}; UTC crash reports and minidumps in logs", GetCurrentProcessId());
+    sDiagnostics->info("Crash diagnostics enabled; pid={}; text crash reports in logs", GetCurrentProcessId());
     sPreviousCrashFilter = SetUnhandledExceptionFilter(DiagnosticCrashFilter);
     std::signal(SIGABRT, DiagnosticAbort);
     std::set_terminate([] { DiagnosticAbort(SIGABRT); });
 }
 
 void TickCrashDiagnostics() {
-    if (!sDiagnostics) return;
+    if (CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0)) {
+        CrashMonitor_SetEnabled(false);
+        if (sDiagnostics) sDiagnostics->set_level(spdlog::level::off);
+        return;
+    }
+    InitCrashDiagnostics();
+    sDiagnostics->set_level(spdlog::level::info);
     static int lastGame = -1, lastRace = -1, lastCourse = -1;
     static int lastDetailed = -1;
     static auto lastWrite = std::chrono::steady_clock::time_point{};
@@ -211,6 +411,87 @@ void TickCrashDiagnostics() {
 }
 }
 #endif
+
+namespace {
+struct LightningMapStats { unsigned races = 0; unsigned uses = 0; };
+std::map<std::string, LightningMapStats> sLightningMaps;
+std::string sLightningMap;
+unsigned sLightningRaceUses = 0;
+bool sLightningRaceActive = false;
+
+void LogLightningSummary(const char* reason) {
+    if (!sLightningRaceActive) return;
+    const auto& total = sLightningMaps.at(sLightningMap);
+    const std::string line = fmt::format(
+        "Lightning race summary: map=\"{}\" uses={} map_session_uses={} map_session_races={} reason={}",
+        sLightningMap, sLightningRaceUses, total.uses, total.races, reason);
+    SPDLOG_INFO("{}", line);
+#ifdef _WIN32
+    if (sDiagnostics) sDiagnostics->info("{}", line);
+#endif
+    sLightningRaceActive = false;
+}
+void TickLightningSummary() {
+    if (sLightningRaceActive && (gGamestate != RACING || LocalMP_RaceResultsOpen() || gRaceState == RACE_FINISHED))
+        LogLightningSummary(gGamestate != RACING ? "left race" : "race finished");
+}
+}
+
+extern "C" const char* Diagnostics_SaveLocation(void) {
+    if (gGamestate != RACING || !CM_GetProps()) return "Start a race before saving a location.";
+    try {
+        const auto directory = Ship::Context::GetPathRelativeToAppDirectory("logs");
+        std::filesystem::create_directories(directory);
+        const auto filePath = std::filesystem::path(directory) / "saved-locations.txt";
+        std::ofstream out(filePath, std::ios::app);
+        if (!out) return "Could not open logs/saved-locations.txt.";
+        const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        out << fmt::format("\nSaved location (Unix time {}): track=\"{}\" course={} mode={} race_time={:.3f}\n",
+                           static_cast<long long>(now), CM_GetProps()->Name, gCurrentCourseId, gModeSelection, gCourseTimer);
+        const int humans = std::clamp(LocalMP_Count(), 1, MAX_HUMAN_PLAYERS);
+        for (int i = 0; i < humans; ++i) {
+            const Player& player = gPlayers[i];
+            out << fmt::format("P{} position=({:.2f}, {:.2f}, {:.2f}) rotation=({}, {}, {}) speed={:.2f} surface={}\n",
+                               i + 1, player.pos[0], player.pos[1], player.pos[2], player.rotation[0],
+                               player.rotation[1], player.rotation[2], player.speed, player.surfaceType);
+            if (gScreenContexts[i].camera) {
+                const Camera& camera = *gScreenContexts[i].camera;
+                out << fmt::format("   camera=({:.2f}, {:.2f}, {:.2f}) look_at=({:.2f}, {:.2f}, {:.2f})\n",
+                                   camera.pos[0], camera.pos[1], camera.pos[2], camera.lookAt[0], camera.lookAt[1], camera.lookAt[2]);
+            }
+        }
+        out.flush();
+        if (!out) return "Could not write logs/saved-locations.txt.";
+        return "Saved to logs/saved-locations.txt.";
+    } catch (const std::exception&) {
+        return "Could not write logs/saved-locations.txt.";
+    }
+}
+
+extern "C" void Diagnostics_BeginLightningRace(void) {
+    LogLightningSummary("next race or restart");
+    if (gDemoMode || gGamestate != RACING) return;
+    sLightningMap = CM_GetProps()->Name;
+    sLightningRaceUses = 0;
+    ++sLightningMaps[sLightningMap].races;
+    sLightningRaceActive = true;
+}
+
+extern "C" void Diagnostics_RecordLightningUse(int playerId) {
+    if (gDemoMode || gGamestate != RACING || gRaceState == RACE_FINISHED ||
+        LocalMP_RaceResultsOpen() || playerId < 0 || playerId >= NUM_RACERS) return;
+    if (!sLightningRaceActive) Diagnostics_BeginLightningRace();
+    if (!sLightningRaceActive) return;
+    const unsigned total = ++sLightningMaps[sLightningMap].uses;
+    ++sLightningRaceUses;
+    const std::string line = fmt::format(
+        "Lightning used: map=\"{}\" course={} player={} race_time={:.3f} race_uses={} map_session_uses={}",
+        sLightningMap, gCurrentCourseId, playerId + 1, gCourseTimer, sLightningRaceUses, total);
+    SPDLOG_INFO("{}", line);
+#ifdef _WIN32
+    if (sDiagnostics) sDiagnostics->info("{}", line);
+#endif
+}
 
 extern "C" void Graphics_PushFrame(Gfx* pool) {
     GameEngine::ProcessGfxCommands(pool);
@@ -308,6 +589,7 @@ void CustomEngineInit() {
     GetWorld()->AddCup(gStarCup.get());
     GetWorld()->AddCup(gSpecialCup.get());
     GetWorld()->AddCup(gBattleCup.get());
+    GetWorld()->InitExtraCups();
 
     SetMarioRaceway();
 
@@ -348,6 +630,32 @@ void SetMarioRaceway(void) {
     GetWorld()->SetCurrentCup(gMushroomCup.get());
     GetWorld()->GetCurrentCup()->CursorPosition = 3;
     GetWorld()->CupIndex = 0;
+}
+
+void ExtraMaps_OnChanged(void) {
+    auto* world = GetWorld();
+    if (!world || CVarGetInteger(CVAR_EXTRA_MAPS, 1)) return;
+    const size_t index = world->GetCupIndex();
+    world->SetExtraCupPage(false);
+    if (index < world->Cups.size()) world->SetCurrentCup(world->Cups[index]);
+    TrackBrowser_ResetSelectedTrack();
+}
+int ExtraMaps_Available(void) { return GetWorld()->ExtraCupsAvailable(); }
+int ExtraMaps_Page(void) { return GetWorld()->IsExtraCupPage() && GetWorld()->ExtraCupsAvailable(); }
+void ExtraMaps_SetPage(int enabled) { GetWorld()->SetExtraCupPage(enabled != 0); }
+const char* ExtraMaps_CourseName(int cup, int row) {
+    if (cup < 0 || cup >= 4 || row < 0 || row >= 4) return "";
+    char name[32];
+    snprintf(name, sizeof(name), "amped:course_%02d", cup * 4 + row + 1);
+    const TrackInfo* info = gTrackRegistry.GetInfo(name);
+    if (!info) return "";
+    static std::array<std::string, 16> labels;
+    auto& label = labels[cup * 4 + row];
+    label = info->Name;
+    const auto suffix = label.find(" (test)");
+    if (suffix != std::string::npos) label.erase(suffix);
+    std::transform(label.begin(), label.end(), label.begin(), [](unsigned char c) { return std::toupper(c); });
+    return label.c_str();
 }
 
 u32 WorldNextCup(void) {
@@ -737,7 +1045,7 @@ void CM_RaceDrawSky(ScreenContext* screen, s32 someId) {
     }
 }
 
-void CM_Waypoints(Player* player, int8_t playerId) {
+void CM_Waypoints(Player* player, int16_t playerId) {
     if (GetWorld()->GetTrack()) {
         GetWorld()->GetTrack()->Waypoints(player, playerId);
     }
@@ -783,13 +1091,13 @@ void CM_CreditsSpawnActors() {
     }
 }
 
-void CM_WhatDoesThisDo(Player* player, int8_t playerId) {
+void CM_WhatDoesThisDo(Player* player, int16_t playerId) {
     if (GetWorld()->GetTrack()) {
         GetWorld()->GetTrack()->WhatDoesThisDo(player, playerId);
     }
 }
 
-void CM_WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void CM_WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (GetWorld()->GetTrack()) {
         GetWorld()->GetTrack()->WhatDoesThisDoAI(player, playerId);
     }
@@ -834,16 +1142,17 @@ void CM_SpawnStarterLakitu() {
         return;
     }
 
+    const auto type = gQuickTimeTrial ? OLakitu::IDLE : OLakitu::STARTER;
     for (size_t i = 0; i < LocalMP_Count(); i++) {
         // Retry does not respawn actors, therefore, re-use lakitu.
         if (auto it = GetWorld()->Lakitus.find(i); it != GetWorld()->Lakitus.end()) {
             if (it->second) {
-                it->second->Activate(OLakitu::STARTER);
+                it->second->Activate(type);
             }
             continue; // Already exists, skip spawning
         }
 
-        auto lakitu = std::make_unique<OLakitu>(i, OLakitu::LakituType::STARTER);
+        auto lakitu = std::make_unique<OLakitu>(i, type);
         GetWorld()->Lakitus[i] = lakitu.get();
         GetWorld()->AddObject(std::move(lakitu));
     }
@@ -1007,6 +1316,11 @@ bool IsToadsTurnpike()    { return dynamic_cast<ToadsTurnpike*>(GetWorld()->GetT
 bool IsKalimariDesert()   { return dynamic_cast<KalimariDesert*>(GetWorld()->GetTrack()) != nullptr; }
 bool IsSherbetLand()      { return dynamic_cast<SherbetLand*>(GetWorld()->GetTrack()) != nullptr; }
 bool IsRainbowRoad()      { return dynamic_cast<RainbowRoad*>(GetWorld()->GetTrack()) != nullptr; }
+bool CM_IsTrackResource(const char* resourceName) {
+    const auto* track = GetWorld()->GetTrack();
+    return track && track->ResourceName == resourceName;
+}
+
 bool IsWarioStadium()     { return dynamic_cast<WarioStadium*>(GetWorld()->GetTrack()) != nullptr; }
 bool IsBlockFort()        { return dynamic_cast<BlockFort*>(GetWorld()->GetTrack()) != nullptr; }
 bool IsSkyscraper()       { return dynamic_cast<Skyscraper*>(GetWorld()->GetTrack()) != nullptr; }
@@ -1142,14 +1456,84 @@ static void ApplyPendingReset() {
     gFadeModeSelection = FADE_MODE_LOGO;
 }
 
+#if defined(_WIN32)
+extern "C" void PerformanceGpuSnapshot(unsigned long long*, unsigned long long*);
+#endif
+// Independent, low-volume performance sampling; works even with regular logs off.
+extern "C" void PerfDiagMark(int section) {
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point marks[8]{};
+    static double sums[4]{};
+    static int frames = 0;
+    static Clock::time_point interval{};
+    if (!CVarGetInteger("gDiagnostics.PerformanceCapture", 0) || gGamestate != RACING || gDemoMode) {
+        frames = 0; interval = {}; for (double& sum : sums) sum = 0; return;
+    }
+    const auto now = Clock::now();
+    if (section >= 0 && section < 4) marks[section] = now;
+    else if (section >= 4 && section < 8 && marks[section - 4] != Clock::time_point{}) {
+        sums[section - 4] += std::chrono::duration<double, std::milli>(now - marks[section - 4]).count();
+    } else if (section == 8) {
+        if (interval == Clock::time_point{}) interval = now;
+        ++frames;
+        double elapsed = std::chrono::duration<double>(now - interval).count();
+        if (elapsed >= 5.0) {
+            const auto file = Ship::Context::GetPathRelativeToAppDirectory("logs/performance-capture.csv");
+            std::filesystem::create_directories(std::filesystem::path(file).parent_path());
+            std::ofstream out(file, std::ios::app);
+            unsigned long long gpuUs = 0, gpuCount = 0;
+#if defined(_WIN32)
+            static unsigned long long previousGpuUs = 0, previousGpuCount = 0;
+            unsigned long long totalGpuUs = 0, totalGpuCount = 0;
+            PerformanceGpuSnapshot(&totalGpuUs, &totalGpuCount);
+            gpuUs = totalGpuUs - previousGpuUs; gpuCount = totalGpuCount - previousGpuCount;
+            previousGpuUs = totalGpuUs; previousGpuCount = totalGpuCount;
+#endif
+            if (out) out << "unix_time=" << std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() << ",racers=" << LocalMP_RacerCount() << ",fps=" << frames / elapsed
+                << ",frame_ms=" << sums[0] / frames << ",game_state_ms=" << sums[1] / frames
+                << ",cpu_path_ms=" << sums[2] / frames << ",graphics_submit_wait_ms=" << sums[3] / frames
+                << ",gpu_frame_ms=" << (gpuCount ? (double)gpuUs / gpuCount / 1000.0 : -1.0) << ",gpu_samples=" << gpuCount << "\n";
+            frames = 0; interval = now; for (double& sum : sums) sum = 0;
+        }
+    }
+}
+
 void push_frame() {
+    PerfDiagMark(0);
+#ifndef __SWITCH__
+    static int previousLogLevel = -1;
+    const int logLevel = CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0) ? spdlog::level::off :
+                         CVarGetInteger("gDeveloperTools.LogLevel", 1);
+    if (logLevel != previousLogLevel) {
+        Ship::Context::GetRawInstance()->GetLogger()->set_level(static_cast<spdlog::level::level_enum>(logLevel));
+        previousLogLevel = logLevel;
+    }
+#endif
     ApplyPendingReset();
+    TickLightningSummary();
+    TickAudioDiagnostics();
+    // The audio mixer produces roughly one 30 Hz block per invocation. A
+    // native-rate race can render many frames per audio block; driving audio
+    // once per rendered frame would accelerate it and overflow the queue.
+    static auto nextNativeAudio = std::chrono::steady_clock::time_point{};
+    const auto audioNow = std::chrono::steady_clock::now();
+    bool runAudio = true;
+    if (GameEngine_IsExperimentalNativePresentation()) {
+        if (nextNativeAudio == std::chrono::steady_clock::time_point{}) nextNativeAudio = audioNow;
+        runAudio = audioNow >= nextNativeAudio;
+        if (runAudio) {
+            nextNativeAudio += std::chrono::microseconds(33333);
+            if (audioNow - nextNativeAudio > std::chrono::milliseconds(200)) nextNativeAudio = audioNow;
+        }
+    } else {
+        nextNativeAudio = {};
+    }
 #ifdef _WIN32
     sDiagnosticStage = "frame start";
     TickCrashDiagnostics();
     sDiagnosticStage = "audio start";
 #endif
-    GameEngine::StartAudioFrame();
+    if (runAudio) GameEngine::StartAudioFrame();
 #ifdef _WIN32
     sDiagnosticStage = "engine start";
 #endif
@@ -1161,10 +1545,12 @@ void push_frame() {
 #ifdef _WIN32
     sDiagnosticStage = "audio end";
 #endif
-    GameEngine::EndAudioFrame();
+    if (runAudio) GameEngine::EndAudioFrame();
 #ifdef _WIN32
     sDiagnosticStage = "frame complete";
 #endif
+    PerfDiagMark(4);
+    PerfDiagMark(8);
     // thread5_game_loop();
     // Graphics_ThreadUpdate();w
 }
@@ -1195,6 +1581,12 @@ void CM_ThrowRuntimeError(const char* fmt, ...) {
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #endif
+
+extern "C" {
+bool gQuickTimeTrial = false;
+bool gRace200cc = false;
+bool gRaceCustomCC = false;
+}
 
 #ifdef _WIN32
 int SDL_main(int argc, char** argv) {
@@ -1262,13 +1654,40 @@ extern "C"
 
     thread5_game_loop();
     gEditor.Load();
+    if (argc >= 2 && strcmp(argv[1], "--time-trial") == 0) {
+        const bool mirror = argc == 4 && strcmp(argv[3], "--mirror") == 0;
+        const TrackInfo* track = (argc == 3 || mirror) ? gTrackRegistry.GetInfo(argv[2]) : nullptr;
+        if (track) {
+            TrackBrowser_SetTrack(argv[2]);
+            gQuickTimeTrial = true;
+            gModeSelection = TIME_TRIALS;
+            gPlayerCount = 1;
+            gScreenModeSelection = SCREEN_MODE_1P;
+            gCharacterSelections[0] = MARIO;
+            gCCSelection = CC_150;
+            set_mirror_mode(mirror);
+            gTourComplete = true;
+            gMenuSelection = COURSE_SELECT_MENU;
+            gGamestateNext = RACING;
+            SPDLOG_INFO("Quick Time Trial: {} ({})", track->Name, track->ResourceName);
+        } else {
+            SPDLOG_ERROR("Usage: Spaghettify --time-trial <race course ID> [--mirror]");
+            for (const TrackInfo* entry : gTrackRegistry.GetAllInfo()) {
+                SPDLOG_INFO("Course: {} ({})", entry->Name, entry->ResourceName);
+            }
+        }
+    }
     while (WindowIsRunning()) {
         push_frame();
     }
+    LogLightningSummary("game shutdown");
+    FlushAudioDiagnostics();
     CustomEngineDestroy();
 #ifdef _WIN32
-    sDiagnostics->info("Normal game shutdown");
-    sDiagnostics->flush();
+    if (sDiagnostics && !CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0)) {
+        sDiagnostics->info("Normal game shutdown");
+        sDiagnostics->flush();
+    }
     CrashMonitor_Stop();
 #endif
     // GameEngine::Instance->ProcessFrame(push_frame);

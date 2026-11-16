@@ -44,7 +44,13 @@ enum SubMenuSelectionType {
     SUB_MENU_OPTION_SOUND_MODE,
     SUB_MENU_OPTION_COPY_CONTROLLER_PAK,
     SUB_MENU_OPTION_ERASE_ALL_DATA,
-    SUB_MENU_OPTION_MAX = SUB_MENU_OPTION_ERASE_ALL_DATA, // 0x18
+    SUB_MENU_OPTION_GAMEPLAY_MIN,
+    SUB_MENU_OPTION_EIGHT_PLAYERS = SUB_MENU_OPTION_GAMEPLAY_MIN,
+    SUB_MENU_OPTION_SIXTEEN_PLAYERS,
+    SUB_MENU_OPTION_AFK_BOTS,
+    SUB_MENU_OPTION_EXTRA_CHARACTERS,
+    SUB_MENU_OPTION_EXTRA_MAPS,
+    SUB_MENU_OPTION_MAX = SUB_MENU_OPTION_EXTRA_MAPS,
     SUB_MENU_ERASE_MIN = 0x1E,
     SUB_MENU_ERASE_QUIT = SUB_MENU_ERASE_MIN,
     SUB_MENU_ERASE_ERASE,
@@ -279,5 +285,17 @@ extern const s16 gCupCourseOrder[NUM_CUPS][NUM_COURSES_PER_CUP];
 extern const union GameModePack sSoundMenuPack;
 
 // end of menus.c variables
+
+
+
+typedef struct GameplayOption {
+    char* label;
+    const char* cvar;
+    int defaultValue;
+    void (*onChanged)(void);
+} GameplayOption;
+
+enum { GAMEPLAY_OPTION_COUNT = SUB_MENU_OPTION_MAX - SUB_MENU_OPTION_GAMEPLAY_MIN + 1 };
+extern const GameplayOption gGameplayOptions[GAMEPLAY_OPTION_COUNT];
 
 #endif /* MENUS_H */

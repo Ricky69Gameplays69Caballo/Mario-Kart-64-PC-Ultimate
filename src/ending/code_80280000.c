@@ -3,6 +3,7 @@
 #include <defines.h>
 #include <debug.h>
 #include <mk64.h>
+#include <stdio.h>
 
 #include <main.h>
 #include <segments.h>
@@ -30,8 +31,10 @@
 #include "engine/tracks/Track.h"
 #include "engine/Matrix.h"
 #include "port/Game.h"
+#include "port/NativeFrameClock.h"
 
 s32 D_802874A0;
+static u32 sCreditsBenchmarkUpdates;
 // s32 D_802874A4[5];
 
 void func_80280000(void) {
@@ -45,6 +48,32 @@ void func_80280038(Camera* camera) {
     u16 perspNorm;
     UNUSED s32 pad;
     Mat4 matrix;
+    Vec3f sampledPos, sampledLookAt, sampledUp, savedPos, savedLookAt, savedUp;
+    s16 savedRot[3];
+    const int hasSample = CVarGetInteger("gExperimentalNativeCredits", 0) &&
+        NativeCredits_SampleCamera(camera, gNativeVisualPhase, sampledPos, sampledLookAt, sampledUp);
+    if (hasSample) {
+        for (int axis = 0; axis < 3; ++axis) {
+            savedPos[axis] = camera->pos[axis];
+            savedLookAt[axis] = camera->lookAt[axis];
+            savedUp[axis] = camera->up[axis];
+            savedRot[axis] = camera->rot[axis];
+            camera->pos[axis] = sampledPos[axis];
+            camera->lookAt[axis] = sampledLookAt[axis];
+            camera->up[axis] = sampledUp[axis];
+        }
+        const f32 dx = camera->lookAt[0] - camera->pos[0];
+        const f32 dy = camera->lookAt[1] - camera->pos[1];
+        const f32 dz = camera->lookAt[2] - camera->pos[2];
+        camera->rot[1] = atan2s(dx, dz);
+        camera->rot[0] = atan2s(sqrtf(dx * dx + dz * dz), dy);
+        camera->rot[2] = 0;
+    }
+    if (CVarGetInteger("gExperimentalCreditsContinuityTrace", 0)) {
+        printf("CREDITS_TRACE tick=%d track=%d phase=%.6f sampled=%d pos=(%.5f,%.5f,%.5f)\n",
+               gGlobalTimer, gCreditsCourseId, gNativeVisualPhase, hasSample,
+               camera->pos[0], camera->pos[1], camera->pos[2]);
+    }
 
     ClearMatrixPools();
     Editor_ClearMatrix();
@@ -66,6 +95,15 @@ void func_80280038(Camera* camera) {
     gSPPerspNormalize(gDisplayListHead++, perspNorm);
     gSPMatrix(gDisplayListHead++, camera->perspectiveMatrix,
               G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
+    if (hasSample && CVarGetInteger("gExperimentalCreditsBenchmark", 0)) {
+        static u32 sampleFrames;
+        if (++sampleFrames % 120 == 0) {
+            printf("CREDITS_SUBFRAME phase=%.4f camera=(%.4f,%.4f,%.4f) rendered=(%.4f,%.4f,%.4f)\n",
+                   gNativeVisualPhase, savedPos[0], savedPos[1], savedPos[2],
+                   camera->pos[0], camera->pos[1], camera->pos[2]);
+            fflush(stdout);
+        }
+    }
     guLookAt(camera->lookAtMatrix, camera->pos[0], camera->pos[1], camera->pos[2], camera->lookAt[0],
              camera->lookAt[1], camera->lookAt[2], camera->up[0], camera->up[1], camera->up[2]);
     gSPMatrix(gDisplayListHead++, camera->lookAtMatrix,
@@ -81,10 +119,19 @@ void func_80280038(Camera* camera) {
     render_object(gScreenOneCtx);
     render_player_snow_effect(camera);
     ceremony_transition_sliding_borders();
+    for (uint32_t step = 0; step < gNativeVisualSteps; ++step) ceremony_update_sliding_borders();
     func_80281C40();
     init_rdp();
     func_80093F10();
     init_rdp();
+    if (hasSample) {
+        for (int axis = 0; axis < 3; ++axis) {
+            camera->pos[axis] = savedPos[axis];
+            camera->lookAt[axis] = savedLookAt[axis];
+            camera->up[axis] = savedUp[axis];
+            camera->rot[axis] = savedRot[axis];
+        }
+    }
 }
 
 void func_80280268(s32 trackId) {
@@ -106,28 +153,41 @@ void credits_loop(void) {
     f32 temp;
     f32 temp_f14;
 
-    D_802874A0 = 0;
     if (gIsInQuitToMenuTransition) {
-        gQuitToMenuTransitionCounter--;
-        if (gQuitToMenuTransitionCounter == 0) {
-            gIsInQuitToMenuTransition = 0;
-            gGamestateNext = CREDITS_SEQUENCE;
-            gGamestate = 255;
+        for (uint32_t step = 0; step < gNativeVisualSteps && gIsInQuitToMenuTransition; ++step) {
+            gQuitToMenuTransitionCounter--;
+            if (gQuitToMenuTransitionCounter == 0) {
+                gIsInQuitToMenuTransition = 0;
+                gGamestateNext = CREDITS_SEQUENCE;
+                gGamestate = 255;
+            }
         }
     } else {
-
-        D_802874FC = 0;
-        func_80283648(camera);
+        for (uint32_t step = 0; step < gNativeVisualSteps && !gIsInQuitToMenuTransition; ++step) {
+            D_802874A0 = 0;
+            D_802874FC = 0;
+            func_80283648(camera);
+            temp_f12 = camera->lookAt[0] - camera->pos[0];
+            temp = camera->lookAt[1] - camera->pos[1];
+            temp_f14 = camera->lookAt[2] - camera->pos[2];
+            camera->rot[1] = atan2s(temp_f12, temp_f14);
+            camera->rot[0] = atan2s(sqrtf((temp_f12 * temp_f12) + (temp_f14 * temp_f14)), temp);
+            camera->rot[2] = 0;
+            if (D_802874A0 != 0) D_800DC5E4++;
+            else func_80280000();
+            if (CVarGetInteger("gExperimentalCreditsBenchmark", 0) && ++sCreditsBenchmarkUpdates % 30 == 0) {
+                printf("CREDITS_UPDATE step=%u track=%d mirror=%d camera=(%.4f,%.4f,%.4f)\n", sCreditsBenchmarkUpdates,
+                       gCreditsCourseId, gIsMirrorMode, camera->pos[0], camera->pos[1], camera->pos[2]);
+                fflush(stdout);
+            }
+        }
         temp_f12 = camera->lookAt[0] - camera->pos[0];
         temp = camera->lookAt[1] - camera->pos[1];
         temp_f14 = camera->lookAt[2] - camera->pos[2];
         camera->rot[1] = atan2s(temp_f12, temp_f14);
         camera->rot[0] = atan2s(sqrtf((temp_f12 * temp_f12) + (temp_f14 * temp_f14)), temp);
         camera->rot[2] = 0;
-        if (D_802874A0 != 0) {
-            D_800DC5E4++;
-        } else {
-            func_80280000();
+        if (D_802874A0 == 0) {
             func_80280038(camera);
 #if DVDL
             display_dvdl();
@@ -139,6 +199,8 @@ void credits_loop(void) {
 }
 
 void load_credits(void) {
+    D_802874A0 = 0;
+    sCreditsBenchmarkUpdates = 0;
     CM_CleanCameras();
     Vec3f spawn = {0.0f, 0.0f, 0.0f};
     Camera* camera = CM_AddCamera(spawn, 0, 0);
@@ -200,6 +262,10 @@ void load_credits(void) {
     camera->up[2] = 0.0f;
     init_cinematic_camera();
     credits_spawn_actors();
+    if (CVarGetInteger("gExperimentalCreditsBenchmark", 0) &&
+        CVarGetInteger("gExperimentalCreditsMirror", 0)) {
+        set_mirror_mode(1);
+    }
     init_hud();
     func_80093E60();
     func_80092688();

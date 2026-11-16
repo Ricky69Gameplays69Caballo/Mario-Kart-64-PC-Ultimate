@@ -26,5 +26,5 @@ public:
     virtual void Load() override;
     virtual void BeginPlay() override;
     virtual void Draw(ScreenContext*) override;
-    virtual void Waypoints(Player*, int8_t) override;
+    virtual void Waypoints(Player*, int16_t playerId) override;
 };

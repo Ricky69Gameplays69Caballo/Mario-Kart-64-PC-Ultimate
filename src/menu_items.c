@@ -14,6 +14,9 @@
 #include "code_80005FD0.h"
 #include "code_8006E9C0.h"
 #include "menus.h"
+#include "port/ExtraRacers.h"
+#include "port/LocalMultiplayer.h"
+#include "port/NativeFrameClock.h"
 static void draw_native_shared_character_tags(void);
 #include "racing/memory.h"
 #include "save.h"
@@ -78,6 +81,7 @@ MenuItem gMenuItems[MENU_ITEMS_MAX];
 struct_8018DEE0_entry D_8018DEE0[D_8018DEE0_SIZE];
 static MenuItem sExpandedCharacterPortraits[8];
 static bool sExpandedCharacterPortraitsLoaded = false;
+static u32 sExtraPortraitAnimationEpoch = 1;
 static MenuItem sExpandedBattlePortraits[MAX_HUMAN_PLAYERS];
 static bool sExpandedBattlePortraitsLoaded = false;
 struct_8018E060_entry D_8018E060[D_8018E060_SIZE + 1];
@@ -705,6 +709,7 @@ char* D_800E7A9C[] = {
 
 char* gPlaceText[] = {
     "YOU PLACED", "    st", "    nd", "    rd", "    th", "    th", "    th", "    th", "    th",
+    "    th", "    th", "    th", "    th", "    th", "    th", "    th", "    th",
 };
 
 const s8 gGPPointRewards[] = { 9, 6, 3, 1 };
@@ -1493,6 +1498,10 @@ s32 func_80091D74(void) {
 }
 
 void func_80091EE4(void) {
+    if (ExtraMaps_Page() && gModeSelection == TIME_TRIALS) {
+        bPlayerGhostDisabled = 1;
+        return;
+    }
     s32 temp_s0;
     s32 temp_s2;
     s32 tmp;
@@ -2417,6 +2426,12 @@ void func_80093C98(s32 arg0) {
     //           G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_PROJECTION);
     AddEffectMatrixOrtho();
     gSPDisplayList(gDisplayListHead++, D_02007F18);
+    // Custom track display lists can leave world fog/depth state active.
+    // The native pause/menu overlay must be drawn in screen space.
+    gSPClearGeometryMode(gDisplayListHead++, G_FOG | G_LIGHTING | G_ZBUFFER);
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+    gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
     gDPSetScissor(gDisplayListHead++, G_SC_NON_INTERLACE, 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
     handle_menus_special();
     if (arg0 == 0) {
@@ -2609,24 +2624,39 @@ void func_80094A64(UNUSED struct GfxPool* pool) {
         case COURSE_SELECT_MENU:
             handle_menus_default();
             if (!LocalMP_GameMenuIsOpen()) func_80099AEC();
-            if (gMenuSelection == CHARACTER_SELECT_MENU && !LocalMP_GameMenuIsOpen())
+            if (gMenuSelection == CHARACTER_SELECT_MENU && !LocalMP_GameMenuIsOpen() && !ExtraRacers_Available())
                 draw_native_shared_character_tags();
             break;
     }
 
     LocalMP_DrawGameMenuHint();
     func_8009CA2C();
-    gCycleFlashMenu += 1;
+    gCycleFlashMenu += gNativeVisualSteps;
     gDPPipeSync(gDisplayListHead++);
     gSPDisplayList(gDisplayListHead++, D_020076B0);
 }
 
 void MultiplayerOptions_UpdateMenus(void) {
+    const bool soloVs = CVarGetInteger(CVAR_SOLO_VS, 0) != 0;
     const bool grandPrix = MultiplayerOptions_BotsEnabled() || MultiplayerOptions_EightEnabled() ||
                           MultiplayerOptions_SixteenEnabled();
+    static MenuTexture singlePlayerVsColumn[5];
     static MenuTexture threePlayerGrandPrixColumn[5];
     static MenuTexture fourPlayerGrandPrixColumn[5];
     static s32 previous = -1;
+    for (s32 entry = 0; entry < 3; ++entry) {
+        singlePlayerVsColumn[entry] = seg2_menu_1p_column[entry];
+    }
+    singlePlayerVsColumn[3] = seg2_menu_2p_column[2];
+    singlePlayerVsColumn[3].dY = seg2_menu_2p_column[3].dY;
+    singlePlayerVsColumn[4] = seg2_menu_1p_column[3];
+    D_800E8234[0] = soloVs ? singlePlayerVsColumn : seg2_menu_1p_column;
+    D_800E8254[1] = D_800E8234[0];
+    gPlayerModeSelection[0] = soloVs ? 2 : 1;
+    if (gGameModeMenuColumn[0] > gPlayerModeSelection[0]) {
+        gGameModeMenuColumn[0] = 0;
+    }
+
     // Native 3P/4P columns contain only VS/Battle artwork. Reuse the 2P
     // GP/VS/Battle rows and their offsets while retaining each player card.
     for (s32 entry = 0; entry < 5; ++entry) {
@@ -3134,8 +3164,9 @@ Gfx* func_80095E10_alt(Gfx* displayListHead, s8 textureFormat, s32 texScaleS, s3
                        s32 srcWidth, s32 srcHeight, s32 screenX, s32 screenY, u8* textureData, u32 texWidth,
                        UNUSED u32 texHeight) {
     if (GameEngine_ResourceGetTexTypeByName((const char*) textureData) != 1) {
+        // Tile endpoints are inclusive; native cup textures have no extra rows.
         gDPLoadTextureTile(displayListHead++, textureData, textureFormat, G_IM_SIZ_16b, texWidth, texHeight, srcX, srcY,
-                           srcX + srcWidth - 1, srcY + srcHeight + 2, 0, G_TX_NOMIRROR | G_TX_WRAP,
+                           srcX + srcWidth - 1, srcY + srcHeight - 1, 0, G_TX_NOMIRROR | G_TX_WRAP,
                            G_TX_NOMIRROR | G_TX_WRAP, 0, 0, G_TX_NOLOD, G_TX_NOLOD);
         gSPWideTextureRectangle(displayListHead++, screenX << 2, screenY << 2, (screenX + srcWidth) << 2,
                                 (screenY + srcHeight) << 2, G_TX_RENDERTILE, 0, 0, texScaleS, texScaleT);
@@ -3177,23 +3208,29 @@ Gfx* func_800963F0(Gfx* displayListHead, s8 textureFormat, s32 texScaleS, s32 te
 // last longer
 Gfx* func_80096CD8(Gfx* displayListHead, s32 xPos, s32 yPos, u32 width, u32 height) {
     s32 rnd;
-
-    // Ensure position and dimensions are within valid bounds
-    if (xPos < 0) {
-        width -= xPos;
-        xPos = 0;
-    } else if ((xPos + width) > 320) {
-        width = 320 - xPos;
-    }
-    if (yPos < 0) {
-        height -= yPos;
-        yPos = 0;
-    } else if ((yPos + height) > 240) {
-        height = 240 - yPos;
-    }
-
-    if (width == 0 || height == 0) {
+    const s64 right = MIN((s64)xPos + width, SCREEN_WIDTH);
+    const s64 bottom = MIN((s64)yPos + height, SCREEN_HEIGHT);
+    xPos = MAX(xPos, 0);
+    yPos = MAX(yPos, 0);
+    if (right <= xPos || bottom <= yPos) {
         return displayListHead;
+    }
+    width = (u32)(right - xPos);
+    height = (u32)(bottom - yPos);
+
+    // The N64 static effect sampled beyond this title texture's end. A PC
+    // allocation has no following ROM bytes: the 5,040-byte texture could be
+    // requested as an 8,192-byte block, intermittently crossing a guard page.
+    // Keep the same source pattern in a fixed 32x32 IA16 tile and wrap it to
+    // cover any preview size. Its lifetime also covers deferred display lists.
+    static u8 staticTile[32 * 32 * 2];
+    static bool staticTileReady = false;
+    if (!staticTileReady) {
+        const u8* source = (const u8*)LOAD_ASSET(D_0B002A00);
+        const size_t sourceSize = ResourceGetTexSizeByName(D_0B002A00);
+        if (!source || sourceSize == 0) return displayListHead;
+        for (size_t i = 0; i < sizeof(staticTile); ++i) staticTile[i] = source[i % sourceSize];
+        staticTileReady = true;
     }
 
     rnd = random_int(100);
@@ -3205,9 +3242,9 @@ Gfx* func_80096CD8(Gfx* displayListHead, s32 xPos, s32 yPos, u32 width, u32 heig
     gDPSetPrimColor(displayListHead++, 0, 0, rnd, rnd, rnd, rnd);
     gDPSetCombineMode(displayListHead++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
 
-    // Directly load and draw the entire texture
-    gDPLoadTextureBlock(displayListHead++, ((u8*) LOAD_ASSET(D_0B002A00)) + (random_int(128) * 2), G_IM_FMT_IA,
-                        G_IM_SIZ_16b, width, height, 0, G_TX_WRAP, G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD,
+    const s32 noiseOffset = random_int(128);
+    gDPLoadTextureBlock(displayListHead++, staticTile, G_IM_FMT_IA,
+                        G_IM_SIZ_16b, 32, 32, 0, G_TX_WRAP, G_TX_WRAP, 5, 5, G_TX_NOLOD,
                         G_TX_NOLOD);
     // Clamp positions to valid range
     s32 xStart = CLAMP(xPos << 2, -32768, 32767); // Ensure no overflow in fixed-point
@@ -3216,7 +3253,8 @@ Gfx* func_80096CD8(Gfx* displayListHead, s32 xPos, s32 yPos, u32 width, u32 heig
     s32 yEnd = CLAMP((s32) ((yPos + height) << 2), -32768, 32767);
 
     // Updated call with clamped values
-    gSPWideTextureRectangle(displayListHead++, xStart, yStart, xEnd, yEnd, G_TX_RENDERTILE, 0, 0, 1024, 1024);
+    gSPWideTextureRectangle(displayListHead++, xStart, yStart, xEnd, yEnd, G_TX_RENDERTILE,
+                           (noiseOffset % 32) << 5, (noiseOffset / 32) << 5, 1024, 1024);
 
     return displayListHead;
 }
@@ -3732,6 +3770,7 @@ void replace_texture(s32 index, const char* newTexture) {
 }
 
 void clear_menu_textures(void) {
+    ++sExtraPortraitAnimationEpoch;
     sExpandedCharacterPortraitsLoaded = false;
     sExpandedBattlePortraitsLoaded = false;
     for (size_t i = 0; i < ARRAY_COUNT(sMenuTextureList); i++) {
@@ -4123,6 +4162,7 @@ void func_8009A2F0(struct_8018E0E8_entry* arg0) {
 }
 
 void func_8009A344(void) {
+    ++sExtraPortraitAnimationEpoch;
     s32 index;
     sExpandedCharacterPortraitsLoaded = false;
     sExpandedBattlePortraitsLoaded = false;
@@ -4560,7 +4600,34 @@ Gfx* func_8009B9D0(Gfx* displayListHead, MenuTexture* textures) {
     return displayListHead;
 }
 
+// The supplied 560x240 images share a centered 4:3 composition. At 16:9 the
+// renderer crops the sides; at 21:9 it shows the whole image without stretching.
+static bool draw_wide_menu_art(s32 screen, s32 x, s32 y) {
+    if (!CVarGetInteger("gGraphics.WidescreenMenuBackgrounds", 1) || !WideMenuArt_Available()) return false;
+    static const char* paths[4][2][2] = {
+        {{"__OTR__wide_menu_art/title_blue_left", "__OTR__wide_menu_art/title_blue_right"}, {"__OTR__wide_menu_art/title_sunset_left", "__OTR__wide_menu_art/title_sunset_right"}},
+        {{"__OTR__wide_menu_art/game_blue_left", "__OTR__wide_menu_art/game_blue_right"}, {"__OTR__wide_menu_art/game_sunset_left", "__OTR__wide_menu_art/game_sunset_right"}},
+        {{"__OTR__wide_menu_art/player_blue_left", "__OTR__wide_menu_art/player_blue_right"}, {"__OTR__wide_menu_art/player_sunset_left", "__OTR__wide_menu_art/player_sunset_right"}},
+        {{"__OTR__wide_menu_art/course_blue_left", "__OTR__wide_menu_art/course_blue_right"}, {"__OTR__wide_menu_art/course_sunset_left", "__OTR__wide_menu_art/course_sunset_right"}},
+    };
+    const s32 unlocked = has_unlocked_extra_mode() ? 1 : 0;
+    gSPGrayscale(gDisplayListHead++, false);
+    gSPDisplayList(gDisplayListHead++, D_02007708);
+    for (s32 side = 0; side < 2; ++side) {
+        const char* texture = paths[screen][unlocked][side];
+        const s32 left = x + (side ? 320 : -120);
+        gDPLoadTextureTile(gDisplayListHead++, (u8*)texture, G_IM_FMT_RGBA, G_IM_SIZ_16b,
+                           120, 240, 0, 0, 119, 239, 0, G_TX_NOMIRROR | G_TX_CLAMP,
+                           G_TX_NOMIRROR | G_TX_CLAMP, 0, 0, G_TX_NOLOD, G_TX_NOLOD);
+        gSPWideTextureRectangle(gDisplayListHead++, left * 4, y * 4, (left + 120) * 4,
+                                (y + 240) * 4, G_TX_RENDERTILE, 0, 0, 1024, 1024);
+    }
+    // Draw the original image over the center; only the side extensions remain visible.
+    return false;
+}
+
 void draw_expanded_menu_background(void) {
+    if (draw_wide_menu_art(1, 0, 0)) return;
     const RGBA16* tint = &gBackgroundColor[0];
     gDPSetGrayscaleColor(gDisplayListHead++, tint->red, tint->green, tint->blue, tint->alpha);
     gSPGrayscale(gDisplayListHead++, true);
@@ -4615,6 +4682,21 @@ static const u8 sExtraPlayerColors[12][3] = {
     {255,128,160}, {128,240,96}, {255,208,80}, {48,128,224},
     {208,96,48}, {96,224,176}, {192,144,240}, {160,176,208}
 };
+// Unlike draw_box_fill, this accepts visible coordinates outside the original 4:3 area.
+static Gfx* draw_select_box(Gfx* dl, s32 x1, s32 y1, s32 x2, s32 y2,
+                            s32 r, s32 g, s32 b, s32 a) {
+    const s32 left = OTRGetRectDimensionFromLeftEdge(0);
+    const s32 right = OTRGetRectDimensionFromRightEdge(SCREEN_WIDTH) - 1;
+    x1 = MAX(left, x1); x2 = MIN(right, x2);
+    y1 = MAX(0, y1); y2 = MIN(SCREEN_HEIGHT - 1, y2);
+    if (x1 > x2 || y1 > y2) return dl;
+    gSPDisplayList(dl++, D_02008030);
+    gDPSetFillColor(dl++, (GPACK_RGBA5551(r, g, b, a) << 16) | GPACK_RGBA5551(r, g, b, a));
+    gDPFillWideRectangle(dl++, x1, y1, x2, y2);
+    gSPDisplayList(dl++, D_02008058);
+    return dl;
+}
+
 static void draw_player_number(s32 x, s32 y, s32 player, s32 scale, s32 shade) {
     static const u8 digits[10][7] = {
         {14,17,19,21,25,17,14}, {4,12,4,4,4,4,14}, {14,17,1,2,4,8,31},
@@ -4628,7 +4710,7 @@ static void draw_player_number(s32 x, s32 y, s32 player, s32 scale, s32 shade) {
         for (s32 row = 0; row < 7; ++row) for (s32 col = 0; col < 5; ++col) {
             if (digits[value][row] & (16 >> col)) {
                 const s32 px=x+(digit*6+col)*scale, py=y+row*scale;
-                gDisplayListHead=draw_box_fill(gDisplayListHead,px,py,px+scale-1,py+scale-1,shade,shade,shade,255);
+                gDisplayListHead=draw_select_box(gDisplayListHead,px,py,px+scale-1,py+scale-1,shade,shade,shade,255);
             }
         }
     }
@@ -4677,7 +4759,181 @@ static void draw_native_shared_character_tags(void) {
     }
 }
 
+static void draw_battle_texture_scaled(MenuTexture* texture, s32 x, s32 y, f32 scale);
+
+static void draw_small_character_tag(s32 x, s32 y, s32 player, bool confirmed) {
+    static const u8 digits[10][5] = {
+        {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1},
+        {7,4,7,1,7}, {7,4,7,5,7}, {7,1,1,1,1}, {7,5,7,5,7}, {7,5,7,1,7}
+    };
+    const s32 red = player < 4 ? D_800E74A8[player].red : sExtraPlayerColors[player - 4][0];
+    const s32 green = player < 4 ? D_800E74A8[player].green : sExtraPlayerColors[player - 4][1];
+    const s32 blue = player < 4 ? D_800E74A8[player].blue : sExtraPlayerColors[player - 4][2];
+    gDisplayListHead = draw_select_box(gDisplayListHead, x, y, x + 8, y + 6, red, green, blue, 255);
+    gDisplayListHead = draw_select_box(gDisplayListHead, x + 1, y + 1, x + 7, y + 5, 0, 0, 0, 255);
+    const s32 number = player + 1, count = number >= 10 ? 2 : 1;
+    for (s32 digit = 0; digit < count; ++digit) {
+        const s32 value = count == 2 && digit == 0 ? number / 10 : number % 10;
+        for (s32 row = 0; row < 5; ++row) for (s32 col = 0; col < 3; ++col) {
+            if (!(digits[value][row] & (4 >> col))) continue;
+            const s32 px = x + (count == 2 ? 1 : 3) + digit * 4 + col, py = y + 1 + row;
+            gDisplayListHead = draw_select_box(gDisplayListHead, px, py, px, py, 255, 255, 255, 255);
+        }
+    }
+    if (confirmed) gDisplayListHead = draw_select_box(gDisplayListHead, x, y + 6, x + 8, y + 6, 255, 255, 255, 255);
+}
+
+static const char* extra_character_portrait_frame(s32 id, bool confirmed) {
+    // Each roster card owns a lightweight sequence cursor. Do not allocate
+    // native animation slots: that pool has only 16 entries for 23 portraits.
+    typedef struct {
+        u32 epoch;
+        s32 lastTick, index, remaining, mode;
+        bool confirmed;
+        MkAnimation* sequence;
+    } PortraitAnimation;
+    static PortraitAnimation animations[79];
+    PortraitAnimation* animation = &animations[id];
+    const s32 grid = D_800EFD64[ExtraRacers_Base(id)];
+    const s32 tick = (s32)gGlobalTimer;
+    if (animation->epoch != sExtraPortraitAnimationEpoch) {
+        memset(animation, 0, sizeof(*animation));
+        animation->epoch = sExtraPortraitAnimationEpoch;
+        animation->lastTick = tick;
+        animation->sequence = D_800E8320[grid];
+        animation->remaining = animation->sequence[0].frame_length;
+    }
+    MkAnimation* next = NULL;
+    if (confirmed != animation->confirmed) {
+        animation->confirmed = confirmed;
+        animation->mode = confirmed ? 1 : 3;
+        next = confirmed ? gCharacterCelebrateAnimation[grid] : gCharacterDeselectAnimation[grid];
+    } else if (!confirmed && animation->mode == 0 &&
+               tick != animation->lastTick && ((tick + id * 37) % 150) == 0) {
+        animation->mode = 4;
+        next = ((tick / 150 + id) & 1) ? gCharacterSingleBlinkAnimation[grid] : gCharacterDoubleBlinkAnimation[grid];
+    }
+    if (next) {
+        animation->sequence = next;
+        animation->index = 0;
+        animation->remaining = next[0].frame_length;
+        animation->lastTick = tick;
+    }
+    s32 steps = tick - animation->lastTick;
+    if (steps < 0) steps = 0;
+    if (steps > 8) steps = 8;
+    for (s32 step = 0; step < steps; ++step) {
+        if (--animation->remaining > 0) continue;
+        ++animation->index;
+        if (!animation->sequence[animation->index].mk64Texture) {
+            animation->mode = confirmed ? 2 : 0;
+            animation->sequence = confirmed ? D_800E83A0[grid] : D_800E8320[grid];
+            animation->index = 0;
+        }
+        animation->remaining = animation->sequence[animation->index].frame_length;
+    }
+    animation->lastTick = tick;
+    return ExtraRacers_AnimatedPortrait(id,
+        (const char*)animation->sequence[animation->index].mk64Texture[0].textureData);
+}
+
+void draw_extra_character_select(const u8* ready, s32 count, s32 allReady) {
+    static const s32 grid[] = {0,1,6,3,2,4,5,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,EXTRA_RACERS_RANDOM};
+    const s32 columns = ExtraRacers_Columns();
+    const s32 rows = (ExtraRacers_ChoiceCount() + columns - 1) / columns;
+    const s32 gap = 3;
+    const f32 availableWidth = CVarGetInteger("gGraphics.WidescreenMenuBackgrounds", 1) ?
+        OTRGetDimensionFromRightEdge(SCREEN_WIDTH) - OTRGetDimensionFromLeftEdge(0) : SCREEN_WIDTH;
+    const s32 widthLimit = (s32)((availableWidth - 16 - (columns - 1) * gap) / columns);
+    const s32 heightLimit = (226 - 34 - (rows - 1) * gap) / rows;
+    const s32 size = MAX(1, MIN(widthLimit, heightLimit));
+    const s32 step = size + gap;
+    const s32 left = (SCREEN_WIDTH - (columns * size + (columns - 1) * gap)) / 2;
+    const f32 scale = size / 64.f;
+    // Use the former name-strip height for larger square portraits.
+    // Local boxes must not use the full-screen wide helper.
+    if (!draw_wide_menu_art(2, 0, 0)) {
+        const RGBA16* tint = &gBackgroundColor[1];
+        gDPSetGrayscaleColor(gDisplayListHead++, tint->red, tint->green, tint->blue, tint->alpha);
+        gSPGrayscale(gDisplayListHead++, true);
+        gDisplayListHead = func_8009BC9C(gDisplayListHead, gMenuTexturesBackground[has_unlocked_extra_mode()], 0, 0, 3, 0);
+        gSPGrayscale(gDisplayListHead++, false);
+    }
+    gSPDisplayList(gDisplayListHead++, D_02007708);
+    gDisplayListHead = func_800963F0(gDisplayListHead, G_IM_FMT_RGBA, 1024, 1024, 1.f, 1.f,
+        0, 0, 220, 32, 50, 0, (u8*)D_02004B4C[0].textureData, 220, 32);
+    for (s32 cell = 0; cell < ExtraRacers_ChoiceCount(); ++cell) {
+        const s32 id = ExtraRacers_ChoiceAt(cell), x = left + (cell % columns) * step, y = 34 + (cell / columns) * step;
+        s32 owners[MAX_HUMAN_PLAYERS], ownerCount = 0;
+        bool confirmed = false;
+        for (s32 player = 0; player < count; ++player) {
+            if (ExtraRacers_Selected(player) != id) continue;
+            owners[ownerCount++] = player;
+            confirmed |= ready[player] != 0;
+        }
+        gDisplayListHead = draw_select_box(gDisplayListHead, x, y, x + size - 1, y + size - 1, 0, 0, 0, 255);
+        if (id == EXTRA_RACERS_RANDOM) {
+            gDisplayListHead = draw_select_box(gDisplayListHead, x, y, x + size - 1, y + size - 1, 32, 32, 80, 255);
+            set_text_color(TEXT_YELLOW);
+            print_text1_center_mode_1(x + size / 2, y + (size * 3) / 4, "?", 0, size / 28.f, size / 28.f);
+        } else {
+            const char* portrait = extra_character_portrait_frame(id, confirmed);
+            // Link has no custom menu sequence in the supplied patch. Retain
+            // his own portrait and give it a small nod without showing Luigi.
+            const f32 nod = id == 8 ? (1.f - cosf((gGlobalTimer % 60) * (6.2831853f / 60.f))) *
+                (confirmed ? .025f : .01f) : 0.f;
+            const f32 scaleY = scale * (1.f - nod);
+            const s32 offsetY = (s32)(size * nod);
+            gSPDisplayList(gDisplayListHead++, D_02007708);
+            gDisplayListHead = func_800963F0(gDisplayListHead, G_IM_FMT_RGBA, 1024, 1024, scale, scaleY,
+                0, 0, 64, 64, x, y + offsetY, (u8*)portrait, 64, 64);
+        }
+        if (id != EXTRA_RACERS_RANDOM) {
+            // Base order: Mario, Luigi, Yoshi, Toad, DK, Wario, Peach, Bowser.
+            static const u8 colors[8][3] = {
+                {240, 35, 35}, {35, 205, 65}, {0, 105, 45}, {255, 255, 255},
+                {135, 75, 35}, {255, 220, 0}, {255, 110, 180}, {255, 135, 20}
+            };
+            const s32 base = ExtraRacers_Base(id);
+            const u8* color = colors[base];
+            gDisplayListHead = draw_select_box(gDisplayListHead, x, y + size, x + size - 1, y + size,
+                                               color[0], color[1], color[2], 255);
+            if (base == 3) // Toad: white and red.
+                gDisplayListHead = draw_select_box(gDisplayListHead, x + size / 2, y + size, x + size - 1,
+                                                   y + size, 240, 35, 35, 255);
+        }
+        if (ownerCount) {
+            const s32 player = owners[0];
+            const s32 phase = gGlobalTimer % 16;
+            const s32 shade = ready[player] ? 191 + (phase < 8 ? phase : 16 - phase) * 8 : 255;
+            if (player < 4) {
+                RGBA16* color = &D_800E74A8[player];
+                gDPSetPrimColor(gDisplayListHead++, 0, 0, color->red, color->green, color->blue, color->alpha);
+                gDPSetEnvColor(gDisplayListHead++, shade, shade, shade, 0);
+                draw_battle_texture_scaled(gMenuTexturesBorderPlayer[player], x, y, scale);
+            } else {
+                const u8* color = sExtraPlayerColors[player - 4];
+                draw_expanded_portrait_mist(x, y, color, scale);
+                gDisplayListHead = draw_select_box(gDisplayListHead, x, y, x + size - 1, y, color[0], color[1], color[2], 255);
+                gDisplayListHead = draw_select_box(gDisplayListHead, x, y + size - 1, x + size - 1, y + size - 1, color[0], color[1], color[2], 255);
+                gDisplayListHead = draw_select_box(gDisplayListHead, x, y, x, y + size - 1, color[0], color[1], color[2], 255);
+                gDisplayListHead = draw_select_box(gDisplayListHead, x + size - 1, y, x + size - 1, y + size - 1, color[0], color[1], color[2], 255);
+                draw_player_number(x + 3, y + size - 9, player, 1, shade);
+            }
+            if (ownerCount > 1) for (s32 tag = 0; tag < ownerCount; ++tag)
+                draw_small_character_tag(x + (tag % 4) * 9, y + 2 + (tag / 4) * 8, owners[tag], ready[owners[tag]]);
+        }
+    }
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(160, 235, allReady ? "A / START: CONTINUE    B: CHANGE" :
+        "D-PAD / STICK: MOVE    A: SELECT    B: BACK", 0, .3f, .32f);
+}
+
 void draw_expanded_character_select(const s32* characters, const u8* ready, s32 count, s32 allReady) {
+    if (ExtraRacers_Available()) {
+        draw_extra_character_select(ready, count, allReady);
+        return;
+    }
     if (!sExpandedCharacterPortraitsLoaded) {
         s32 freeSlots = 0;
         for (s32 i = 0; i < D_8018DEE0_SIZE; ++i) freeSlots += D_8018DEE0[i].visible == 0;
@@ -4696,11 +4952,13 @@ void draw_expanded_character_select(const s32* characters, const u8* ready, s32 
         }
         sExpandedCharacterPortraitsLoaded = true;
     }
-    const RGBA16* tint = &gBackgroundColor[1];
-    gDPSetGrayscaleColor(gDisplayListHead++, tint->red, tint->green, tint->blue, tint->alpha);
-    gSPGrayscale(gDisplayListHead++, true);
-    gDisplayListHead = func_8009BC9C(gDisplayListHead, gMenuTexturesBackground[has_unlocked_extra_mode()], 0, 0, 3, 0);
-    gSPGrayscale(gDisplayListHead++, false);
+    if (!draw_wide_menu_art(2, 0, 0)) {
+        const RGBA16* tint = &gBackgroundColor[1];
+        gDPSetGrayscaleColor(gDisplayListHead++, tint->red, tint->green, tint->blue, tint->alpha);
+        gSPGrayscale(gDisplayListHead++, true);
+        gDisplayListHead = func_8009BC9C(gDisplayListHead, gMenuTexturesBackground[has_unlocked_extra_mode()], 0, 0, 3, 0);
+        gSPGrayscale(gDisplayListHead++, false);
+    }
     gDisplayListHead = render_menu_textures(gDisplayListHead, D_02004B4C, 0, 0);
     for (s32 grid = 0; grid < 8; ++grid) {
         MenuItem* item = &sExpandedCharacterPortraits[grid];
@@ -4735,12 +4993,66 @@ void draw_expanded_character_select(const s32* characters, const u8* ready, s32 
     func_80099AEC();
 }
 
-void draw_expanded_race_results(const ExpandedRaceResultRow* rows, s32 count, s32 humans,
+static void draw_expanded_vs_cards(const ExpandedRaceResultRow* rows, s32 count, s32 humans,
+                                    s32 choice, MenuItem* cursor) {
+    const s32 columns = count <= 8 ? 4 : (count + 1) / 2;
+    const f32 cellWidth = 304.f / columns;
+    const s32 size = count <= 8 ? 44 : (s32)(cellWidth - 7);
+    const f32 portraitScale = size / 64.f;
+    static const u8 colors[8][3] = {
+        {30,90,255},{255,50,80},{255,180,20},{40,210,70},
+        {210,40,230},{30,220,240},{150,80,255},{225,225,225}
+    };
+    const s32 counterRows = MultiplayerOptions_SixteenEnabled() ? 5 : 4;
+    static const char* placeLabels[] = {"1ST", "2ND", "3RD", "4TH", "5TH"};
+    char text[32];
+    gDisplayListHead = draw_box_wide(gDisplayListHead, 0, 0, 319, 239, 0, 0, 0, 130);
+    set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_1);
+    print_text1_center_mode_1(160, 24, D_800E7778[0], 0, .8f, .8f);
+    for (s32 index = 0; index < count; ++index) {
+        const ExpandedRaceResultRow* result = &rows[index];
+        const s32 x = 8 + (s32)((index % columns) * cellWidth + (cellWidth - size) / 2);
+        const s32 y = 34 + (index / columns) * 84;
+        const s32 appearance = ExtraRacers_Racer(result->player);
+        const u8* tint = colors[result->player % 8];
+        gDisplayListHead = draw_box_fill(gDisplayListHead, x - 1, y - 1, x + size, y + size,
+                                         tint[0], tint[1], tint[2], 255);
+        gDisplayListHead = draw_box_fill(gDisplayListHead, x, y, x + size - 1, y + size - 1, 0, 0, 0, 255);
+        gSPDisplayList(gDisplayListHead++, D_02007708);
+        gDisplayListHead = func_800963F0(gDisplayListHead, G_IM_FMT_RGBA, 1024, 1024,
+            portraitScale, portraitScale, 0, 0, 64, 64, x, y,
+            (u8*)extra_character_portrait_frame(appearance, result->place == 1), 64, 64);
+        draw_shared_character_player_tag(x + 1, y + size - 9, result->player, true);
+        for (s32 place = 0; place < counterRows; ++place) {
+            set_text_color(place == 0 ? TEXT_YELLOW : place == 1 ? TEXT_BLUE : TEXT_RED);
+            snprintf(text, sizeof(text), "%s - %02d", placeLabels[place],
+                     result->placements[place]);
+            print_text1_center_mode_1(x + size / 2, y + size + 7 + place * 7,
+                                     text, 0, count <= 8 ? .32f : .23f, .30f);
+        }
+    }
+    text_rainbow_effect(choice, 0, TEXT_GREEN);
+    print_text_mode_1(101, 207, "RETRY", 0, .6f, .6f);
+    text_rainbow_effect(choice, 1, TEXT_GREEN);
+    print_text_mode_1(101, 222, "QUIT", 0, .6f, .6f);
+    Unk_D_800E70A0 position = {88, 199 + choice * 15, 0, 0};
+    pause_menu_item_box_cursor(cursor, &position);
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(160, 238, "A SELECT    B BACK", 0, .28f, .28f);
+}
+
+void draw_expanded_race_results(const ExpandedRaceResultRow* rows, s32 count, s32 total, s32 page, s32 pages, s32 humans,
                                 s32 mode, s32 standings, s32 round, s32 totalRounds,
                                 s32 cupComplete, s32 choice, s32 engineClass, MenuItem* cursor) {
+    if (mode == 1 && total <= STANDARD_EXPANDED_RACERS) {
+        draw_expanded_vs_cards(rows, count, humans, choice, cursor);
+        return;
+    }
     const s32 columns = count > 8 ? 2 : 1;
     const s32 rowsPerColumn = (count + columns - 1) / columns;
-    const f32 scale = columns == 2 ? 0.43f : 0.65f;
+    const s32 rowSpacing = rowsPerColumn > 8 ? 112 / (rowsPerColumn - 1) : 15;
+    const f32 scale = rowsPerColumn > 8 ? 0.34f : columns == 2 ? 0.43f : 0.65f;
+    const bool fifthPlace = MultiplayerOptions_SixteenEnabled();
     bool estimated = false;
     char text[64];
     // Use the native ranking typography and full-screen shading over the
@@ -4763,12 +5075,13 @@ void draw_expanded_race_results(const ExpandedRaceResultRow* rows, s32 count, s3
         const s32 valueX = x + (columns == 2 ? 96 : 169);
         set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_2);
         print_text_mode_1(nameX, 55, "DRIVER", 0, scale, scale);
-        print_text_mode_1(valueX, 55, standings ? "PTS + GAIN" : mode == 1 ? "WINS" : "TIME", 0, scale, scale);
+        print_text_mode_1(valueX, 55, standings ? "PTS + GAIN" :
+            mode == 1 ? (fifthPlace ? "1ST-5TH" : "1ST-4TH") : "TIME", 0, scale, scale);
         for (s32 row = 0; row < rowsPerColumn; ++row) {
             const s32 index = column * rowsPerColumn + row;
             if (index >= count) break;
             const ExpandedRaceResultRow* result = &rows[index];
-            const s32 y = 71 + row * 15;
+            const s32 y = 71 + row * rowSpacing;
             set_text_color(result->player < humans ? gGlobalTimer % 3 : TEXT_YELLOW);
             snprintf(text, sizeof(text), "%d.", result->place);
             func_800939C8(x, y, text, -2, scale, scale);
@@ -4776,11 +5089,16 @@ void draw_expanded_race_results(const ExpandedRaceResultRow* rows, s32 count, s3
                      result->player < humans ? result->player + 1 : result->player - humans + 1);
             print_text_mode_1(x + (columns == 2 ? 18 : 26), y, text, 0,
                               columns == 2 ? 0.30f : 0.4f, scale);
-            print_text_mode_1(nameX, y, D_800E76A8[result->character], 0, scale, scale);
+            print_text_mode_1(nameX, y, (char*)ExtraRacers_PlayerName(result->player, result->character), 0, scale, scale);
             if (standings) {
                 snprintf(text, sizeof(text), "%02d  +%d", result->points, result->reward);
             } else if (mode == 1) {
-                snprintf(text, sizeof(text), "%02d", result->points);
+                const s32* placements = result->placements;
+                snprintf(text, sizeof(text), "%d %d %d %d", placements[0], placements[1], placements[2], placements[3]);
+                if (fifthPlace) {
+                    const size_t length = strlen(text);
+                    snprintf(text + length, sizeof(text) - length, " %d", placements[4]);
+                }
             } else if (!result->finished || !isfinite(result->time) || result->time < 0) {
                 snprintf(text, sizeof(text), "DNF");
             } else {
@@ -4804,8 +5122,13 @@ void draw_expanded_race_results(const ExpandedRaceResultRow* rows, s32 count, s3
     Unk_D_800E70A0 position = {88, 199 + choice * 15, 0, 0};
     pause_menu_item_box_cursor(cursor, &position);
     set_text_color(TEXT_YELLOW);
-    print_text1_center_mode_1(160, 238, mode == 0 ?
-        "LEFT-RIGHT  RESULTS-POINTS    A SELECT    B BACK" : "A SELECT    B BACK", 0, 0.28f, 0.28f);
+    if (pages > 1) {
+        snprintf(text, sizeof(text), "PAGE %d / %d   LEFT-RIGHT     A SELECT    B BACK", page, pages);
+        print_text1_center_mode_1(160, 238, text, 0, 0.28f, 0.28f);
+    } else {
+        print_text1_center_mode_1(160, 238, mode == 0 ?
+            "LEFT-RIGHT  RESULTS-POINTS    A SELECT    B BACK" : "A SELECT    B BACK", 0, 0.28f, 0.28f);
+    }
 }
 
 static void draw_battle_texture_scaled(MenuTexture* texture, s32 x, s32 y, f32 scale) {
@@ -4875,11 +5198,20 @@ void draw_expanded_battle_results(const s32* characters, const s32* wins, s32 co
             portrait->subState = 1;
             func_8009A594(portrait->D_8018DEE0_index, 0, D_800E83A0[grid]);
         }
-        // Name bars and victory/defeat portraits are the original battle assets.
-        draw_battle_texture_scaled(D_800E7D54[grid], x, y, portraitScale);
-        if (!frames[portrait->D_8018DEE0_index])
-            frames[portrait->D_8018DEE0_index] = func_8009A878(animation);
-        draw_battle_texture_scaled(frames[portrait->D_8018DEE0_index], x, y, portraitScale);
+        if (ExtraRacers_Available() && ExtraRacers_Racer(player) >= 8) {
+            gSPDisplayList(gDisplayListHead++, D_02007708);
+            gDisplayListHead = func_800963F0(gDisplayListHead, G_IM_FMT_RGBA, 1024, 1024,
+                portraitScale, portraitScale, 0, 0, 64, 64, x, y,
+                (u8*)ExtraRacers_Portrait(ExtraRacers_Racer(player)), 64, 64);
+            set_text_color(player == winner ? TEXT_GREEN : TEXT_YELLOW);
+            print_text1_center_mode_1(x + portraitSize / 2, y + portraitSize + 7,
+                (char*)ExtraRacers_Name(ExtraRacers_Racer(player)), 0, .3f * layoutScale, .3f * layoutScale);
+        } else {
+            draw_battle_texture_scaled(D_800E7D54[grid], x, y, portraitScale);
+            if (!frames[portrait->D_8018DEE0_index])
+                frames[portrait->D_8018DEE0_index] = func_8009A878(animation);
+            draw_battle_texture_scaled(frames[portrait->D_8018DEE0_index], x, y, portraitScale);
+        }
         if (player < 4) {
             RGBA16* color = &D_800E74A8[player];
             gDPSetPrimColor(gDisplayListHead++, 0, 0, color->red, color->green, color->blue, color->alpha);
@@ -4930,16 +5262,58 @@ void draw_expanded_battle_results(const s32* characters, const s32* wins, s32 co
     func_80099AEC();
 }
 
+static void draw_amped_course_art(s32 cup, s32 row, bool preview, s32 x, s32 y, f32 scale) {
+    static char paths[16][2][64];
+    const s32 slot = cup * 4 + row;
+    if (slot < 0 || slot >= 16) return;
+    char* path = paths[slot][preview];
+    if (!path[0]) {
+        snprintf(path, 64, "__OTR__tracks/amped_%02d/menu_%s.rgba16", slot + 1, preview ? "preview" : "banner");
+    }
+    const s32 width = preview ? 128 : 140;
+    const s32 height = preview ? 78 : 18;
+    gSPDisplayList(gDisplayListHead++, D_02007708);
+    gDisplayListHead = func_800963F0(gDisplayListHead, 0, 1024, 1024, scale, scale,
+                                    0, 0, width, height, x, y, (u8*)path, width, height);
+}
+
+static void draw_amped_course_highlight(s32 x, s32 y) {
+    const s32 right = x + 139;
+    const s32 bottom = y + 17;
+    gDisplayListHead = draw_box_fill(gDisplayListHead, x, y, right, y + 1, 255, 249, 120, 255);
+    gDisplayListHead = draw_box_fill(gDisplayListHead, x, bottom - 1, right, bottom, 255, 249, 120, 255);
+    gDisplayListHead = draw_box_fill(gDisplayListHead, x, y + 2, x + 1, bottom - 2, 255, 249, 120, 255);
+    gDisplayListHead = draw_box_fill(gDisplayListHead, right - 1, y + 2, right, bottom - 2, 255, 249, 120, 255);
+}
+
+static void draw_amped_course_previews(s32 cup, s32 x, s32 y) {
+    for (s32 row = 0; row < 4; ++row) {
+        draw_amped_course_art(cup, row, true, x + (row % 2) * 64, y + (row / 2) * 39, 0.5f);
+    }
+}
+
+static void draw_amped_tracks_header(s32 x, s32 y) {
+    gDisplayListHead = draw_box_fill(gDisplayListHead, x + 65, y + 18, x + 254, y + 49, 0, 0, 0, 255);
+    set_text_color(TEXT_YELLOW);
+    print_text1_center_mode_1(x + 160, y + 41, "AMPED UP TRACKS", 0, 0.95f, 1.1f);
+}
+
 void draw_expanded_course_select(s32 cup, s32 previewTrack, s32 mode, s32 stage, s32 engineClass) {
     // Use the native descriptor offsets, artwork, and virtual 320x240 layout.
     if (cup < 0 || cup >= NUM_CUPS || previewTrack < 0 || previewTrack >= 4) return;
+    draw_wide_menu_art(3, 0, 0);
     const RGBA16* tint = &gBackgroundColor[2];
     gDPSetGrayscaleColor(gDisplayListHead++, tint->red, tint->green, tint->blue, tint->alpha);
     gSPGrayscale(gDisplayListHead++, true);
     gDisplayListHead = func_8009BC9C(gDisplayListHead, gMenuTexturesBackground[has_unlocked_extra_mode()], 0, 0, 3, 0);
     gSPGrayscale(gDisplayListHead++, false);
-    load_menu_img_comp_type(gMenuTexturesTrackSelection[0], LOAD_MENU_IMG_TKMK00_ONCE);
-    gDisplayListHead = render_menu_textures(gDisplayListHead, gMenuTexturesTrackSelection[0], 0, 0);
+    const bool ampedPage = mode != 2 && ExtraMaps_Page();
+    if (ampedPage) {
+        draw_amped_tracks_header(0, 0);
+    } else {
+        load_menu_img_comp_type(gMenuTexturesTrackSelection[0], LOAD_MENU_IMG_TKMK00_ONCE);
+        gDisplayListHead = render_menu_textures(gDisplayListHead, gMenuTexturesTrackSelection[0], 0, 0);
+    }
 
     const bool confirming = stage == (mode == 1 ? 2 : 1);
     if (mode != 2) {
@@ -4947,7 +5321,10 @@ void draw_expanded_course_select(s32 cup, s32 previewTrack, s32 mode, s32 stage,
             if (stage > 0 && i != cup) continue;
             const s32 x = stage == 0 ? D_800E7148[i].column : 128;
             const s32 y = D_800E7148[i].row;
-            if (i == cup && stage == 0) {
+            if (ampedPage) {
+                const s32 shade = i == cup ? 55 : 0;
+                gDisplayListHead = draw_box_fill(gDisplayListHead, x, y, x + 64, y + 39, shade, shade, shade, 255);
+            } else if (i == cup && stage == 0) {
                 gDisplayListHead = draw_flash_select_case_slow(gDisplayListHead, x, y, x + 64, y + 39);
             } else {
                 gDisplayListHead = draw_box_fill(gDisplayListHead, x, y, x + 64, y + 39,
@@ -4968,9 +5345,20 @@ void draw_expanded_course_select(s32 cup, s32 previewTrack, s32 mode, s32 stage,
             else gDisplayListHead = draw_box_fill(gDisplayListHead, left, top, right, bottom, 255, 249, 220, 255);
         } else gDisplayListHead = draw_box_fill(gDisplayListHead, left, top, right, bottom, 1, 1, 1, 255);
     }
-    MenuTexture* names = gMenuTexturesTrackSelection[mode == 2 ? 10 : cup + 6];
-    load_menu_img_comp_type(names, LOAD_MENU_IMG_TKMK00_ONCE);
-    gDisplayListHead = render_menu_textures(gDisplayListHead, names, 0, 0);
+    if (mode == 2 || !ExtraMaps_Page()) {
+        MenuTexture* names = gMenuTexturesTrackSelection[mode == 2 ? 10 : cup + 6];
+        load_menu_img_comp_type(names, LOAD_MENU_IMG_TKMK00_ONCE);
+        gDisplayListHead = render_menu_textures(gDisplayListHead, names, 0, 0);
+    } else {
+        for (s32 row = 0; row < 4; ++row) {
+            const s32 x = D_800E7208[row][0].column;
+            const s32 y = D_800E7208[row][0].row;
+            draw_amped_course_art(cup, row, false, x, y, 1.0f);
+            if (mode != 0 && stage > 0 && row == previewTrack) {
+                draw_amped_course_highlight(x, y);
+            }
+        }
+    }
     if (mode == 0 && !confirming) {
         for (s32 row = 0; row < 4; ++row) {
             if (row != previewTrack) {
@@ -4980,8 +5368,16 @@ void draw_expanded_course_select(s32 cup, s32 previewTrack, s32 mode, s32 stage,
         }
     }
 
-    gDisplayListHead = draw_box_fill(gDisplayListHead, 22, 111, 151, 190, 0, 0, 0, 255);
-    if (mode == 1 && stage == 0) {
+    if (!ampedPage) {
+        gDisplayListHead = draw_box_fill(gDisplayListHead, 22, 111, 151, 190, 0, 0, 0, 255);
+    }
+    if (ampedPage) {
+        if (mode == 1 && stage == 0) {
+            draw_amped_course_previews(cup, 23, 112);
+        } else {
+            draw_amped_course_art(cup, previewTrack, true, 23, 112, 1.0f);
+        }
+    } else if (mode == 1 && stage == 0) {
         // VS shows all four previews until a cup is selected, as in the native menu.
         for (s32 i = 0; i < 4; ++i) {
             MenuTexture* image = D_800E7E34[gCupCourseOrder[cup][i]][0].mk64Texture;
@@ -5020,7 +5416,17 @@ static Gfx* render_menu_textures_filtered(Gfx* arg0, MenuTexture* arg1, s32 colu
 
 void draw_expanded_menu_button(s32 column, s32 row, s32 kind, s32 selected, s32 confirmed) {
     MenuTexture artwork[2] = {0};
-    if (kind < 0 || kind > 7) return;
+    if (kind < 0 || kind > 9) return;
+    if (kind == 8 || kind == 9) {
+        if (selected && !confirmed) gDisplayListHead = draw_flash_select_case_slow(gDisplayListHead, column, row, column + 63, row + 17);
+        else gDisplayListHead = draw_box_fill(gDisplayListHead, column, row, column + 63, row + 17, selected ? 255 : 1, selected ? 249 : 1, selected ? 220 : 1, 255);
+        set_text_color(TEXT_YELLOW);
+        char ccText[32];
+        if (kind == 9) snprintf(ccText, sizeof(ccText), "%.0f CC", CVarGetFloat("gCustomCC", 150.0f));
+        else snprintf(ccText, sizeof(ccText), "200 CC");
+        print_text1_center_mode_1(column + 32, row + 14, ccText, 0, .45f, .55f);
+        return;
+    }
     // Copy the exact native GP/VS and CC descriptors, including their icon and frame.
     artwork[0] = kind == 7 ? D_0200487C[0] : kind == 6 ? seg2_menu_2p_column[3] :
                  kind < 2 ? seg2_menu_2p_column[kind + 1] : D_800E8294[kind - 2][0];
@@ -5601,8 +6007,8 @@ void draw_fade_in(s32 arg0, s32 arg1, s32 arg2) {
             break;
     }
 
-    if ((arg1 == 0) &&
-        (gCurrentTransitionTime[arg0] += 1, (gCurrentTransitionTime[arg0] >= gTransitionDuration[arg0]))) {
+    if ((arg1 == 0) && gNativeVisualSteps != 0 &&
+        (gCurrentTransitionTime[arg0] += gNativeVisualSteps, (gCurrentTransitionTime[arg0] >= gTransitionDuration[arg0]))) {
         if (gGamestate == 4) {
             gTransitionType[arg0] = 6;
             return;
@@ -6050,8 +6456,8 @@ void func_8009D77C(s32 arg0, s32 arg1, s32 arg2) {
             break;
     }
 
-    if (arg1 == 0) {
-        gCurrentTransitionTime[arg0]++;
+    if (arg1 == 0 && gNativeVisualSteps != 0) {
+        gCurrentTransitionTime[arg0] += gNativeVisualSteps;
         if ((gTransitionDuration[arg0] + 1) < gCurrentTransitionTime[arg0]) {
             func_8009CE64(arg0);
         }
@@ -6132,7 +6538,7 @@ void func_8009D998(s32 arg0) {
 void func_8009DAA8(void) {
     u32 var_t0;
 
-    gCurrentTransitionTime[4]++;
+    gCurrentTransitionTime[4] += gNativeVisualSteps;
     if (gCurrentTransitionTime[4] >= (gTransitionDuration[4] + 1)) {
         func_8009CE64(4);
     }
@@ -6151,6 +6557,7 @@ void func_8009DB8C(void) {
     u32 var_s3;
     s32 var_v1;
 
+    for (u32 visualStep = 0; visualStep < gNativeVisualSteps; ++visualStep) {
     gCurrentTransitionTime[4]++;
     // why?
     var_v1 = gCurrentTransitionTime[4];
@@ -6161,6 +6568,7 @@ void func_8009DB8C(void) {
             }
         } else {
             func_8009CE64(4);
+            break;
         }
     } else {
         var_s0 = 0;
@@ -6176,6 +6584,7 @@ void func_8009DB8C(void) {
                 var_s0 = 0;
             }
         }
+    }
     }
     gDPPipeSync(gDisplayListHead++);
     gDPSetRenderMode(gDisplayListHead++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
@@ -6769,6 +7178,16 @@ void add_menu_item(s32 type, s32 column, s32 row, s8 priority) {
             load_menu_img(gMenuTexturesBorderPlayer[type - MENU_ITEM_TYPE_0B1]);
             break;
         case MENU_ITEM_TYPE_0BB:
+            // Extra courses have no native time-trial save slots. Never write
+            // their records into the original courses' slots.
+            // Runs with the infinite-mushroom option are not fair records either.
+            if (ExtraMaps_Page() || CVarGetInteger(CVAR_TT_INFINITE_MUSHROOMS, 0)) {
+                var_ra->param1 = -1;
+                var_ra->param2 = 0;
+                bPlayerGhostDisabled = 1;
+                gPostTimeTrialReplayCannotSave = 1;
+                break;
+            }
             var_ra->param1 = func_800B5020(playerHUD[0].someTimer, gCharacterSelections[0]);
             var_ra->param2 = func_800B5218();
             if (bPlayerGhostDisabled != 1) {
@@ -6979,8 +7398,9 @@ void render_menus(MenuItem* arg0) {
                 func_800A0EB8(arg0, arg0->type - 0xD8);
                 break;
             case MENU_ITEM_UI_START_BACKGROUND:
-                gDisplayListHead = render_menu_textures(
-                    gDisplayListHead, gMenuTexturesBackground[has_unlocked_extra_mode()], arg0->column, arg0->row);
+                if (!draw_wide_menu_art(0, arg0->column, arg0->row))
+                    gDisplayListHead = render_menu_textures(
+                        gDisplayListHead, gMenuTexturesBackground[has_unlocked_extra_mode()], arg0->column, arg0->row);
                 break;
             case MENU_ITEM_UI_LOGO_AND_COPYRIGHT:
                 render_game_logo((arg0->column + 0xA0), (arg0->row + 0x47));
@@ -7036,6 +7456,8 @@ void render_menus(MenuItem* arg0) {
             case MAIN_MENU_BACKGROUND:
             case CHARACTER_SELECT_BACKGROUND:
             case COURSE_SELECT_BACKGROUND:
+                draw_wide_menu_art(arg0->type == MAIN_MENU_BACKGROUND ? 1 :
+                                   arg0->type == CHARACTER_SELECT_BACKGROUND ? 2 : 3, arg0->column, arg0->row);
                 gDPSetGrayscaleColor(gDisplayListHead++, gBackgroundColor[arg0->type - MAIN_MENU_BACKGROUND].red,
                                      gBackgroundColor[arg0->type - MAIN_MENU_BACKGROUND].green,
                                      gBackgroundColor[arg0->type - MAIN_MENU_BACKGROUND].blue,
@@ -7135,20 +7557,32 @@ void render_menus(MenuItem* arg0) {
                 if (var_v1 == -1) {
                     break;
                 }
+                s32 classRow = arg0->row;
+                bool show200 = CVarGetInteger("gEnable200cc", 0) && var_a1 == MAIN_MENU_50CC;
+                bool showCustom = CVarGetInteger("gEnableCustomCC", 0) && var_a1 == MAIN_MENU_50CC;
+                if (show200 || showCustom) classRow -= 18 * (show200 && showCustom ? 2 : 1);
                 if ((gMainMenuSelection >= 5) && (var_v1 == (arg0->type - var_a1))) {
                     if (gMainMenuSelection >= 6) {
                         gDisplayListHead =
-                            draw_box_fill(gDisplayListHead, arg0->column, arg0->row, arg0->column + 0x3F,
-                                          arg0->row + 0x11, 0x000000FF, 0x000000F9, 0x000000DC, 0x000000FF);
+                            draw_box_fill(gDisplayListHead, arg0->column, classRow, arg0->column + 0x3F,
+                                          classRow + 0x11, 0x000000FF, 0x000000F9, 0x000000DC, 0x000000FF);
                     } else {
                         gDisplayListHead = draw_flash_select_case_slow(
-                            gDisplayListHead, arg0->column ^ 0, arg0->row ^ 0, arg0->column + 0x3F, arg0->row + 0x11);
+                            gDisplayListHead, arg0->column ^ 0, classRow ^ 0, arg0->column + 0x3F, classRow + 0x11);
                     }
                 } else {
-                    gDisplayListHead = draw_box_fill(gDisplayListHead, arg0->column, arg0->row, arg0->column + 0x3F,
-                                                     arg0->row + 0x11, 1, 1, 1, 0x000000FF);
+                    gDisplayListHead = draw_box_fill(gDisplayListHead, arg0->column, classRow, arg0->column + 0x3F,
+                                                     classRow + 0x11, 1, 1, 1, 0x000000FF);
                 }
-                gDisplayListHead = render_menu_textures(gDisplayListHead, sp9C, arg0->column, arg0->row);
+                gDisplayListHead = render_menu_textures(gDisplayListHead, sp9C, arg0->column, classRow);
+                if (show200 && arg0->type == MAIN_MENU_150CC) {
+                    s32 row200 = classRow + (has_unlocked_extra_mode() ? 36 : 18);
+                    draw_expanded_menu_button(arg0->column, row200, 8, gMainMenuSelection >= 5 && var_v1 == 4, gMainMenuSelection >= 6);
+                }
+                if (showCustom && arg0->type == MAIN_MENU_150CC) {
+                    s32 customRow = classRow + (has_unlocked_extra_mode() ? 36 : 18) + (show200 ? 18 : 0);
+                    draw_expanded_menu_button(arg0->column, customRow, 9, gMainMenuSelection >= 5 && var_v1 == 5, gMainMenuSelection >= 6);
+                }
                 break;
             case MENU_ITEM_TYPE_01B:
                 func_800A10CC(arg0);
@@ -7209,23 +7643,48 @@ void render_menus(MenuItem* arg0) {
             case MENU_ITEM_TYPE_05B:
             case COURSE_SELECT_BATTLE_NAMES:
                 func_800A8A98(arg0);
-                gDisplayListHead = render_menu_textures(
-                    gDisplayListHead,
-                    gMenuTexturesTrackSelection[arg0->type - COURSE_SELECT_MAP_SELECT],
-                    arg0->column, arg0->row);
+                if (ExtraMaps_Page() && gModeSelection != BATTLE) {
+                    for (s32 row = 0; row < 4; ++row) {
+                        const s32 x = arg0->column + D_800E7208[row][0].column;
+                        const s32 y = arg0->row + D_800E7208[row][0].row;
+                        draw_amped_course_art((s32)GetCupIndex(), row, false, x, y, 1.0f);
+                        if (gModeSelection != GRAND_PRIX && gSubMenuSelection > SUB_MENU_MAP_SELECT_CUP &&
+                            row == (s32)GetCupCursorPosition()) {
+                            draw_amped_course_highlight(x, y);
+                        }
+                    }
+                } else {
+                    gDisplayListHead = render_menu_textures(gDisplayListHead,
+                        gMenuTexturesTrackSelection[arg0->type - COURSE_SELECT_MAP_SELECT], arg0->column, arg0->row);
+                }
                 func_800A8CA4(arg0);
                 break;
             case COURSE_SELECT_MAP_SELECT:
-                gDisplayListHead = render_menu_textures(
-                    gDisplayListHead,
-                     gMenuTexturesTrackSelection[arg0->type - COURSE_SELECT_MAP_SELECT],
-                    arg0->column, arg0->row);
+                if (gModeSelection != BATTLE && ExtraMaps_Page()) {
+                    draw_amped_tracks_header(arg0->column, arg0->row);
+                } else {
+                    gDisplayListHead = render_menu_textures(gDisplayListHead, gMenuTexturesTrackSelection[0],
+                                                           arg0->column, arg0->row);
+                }
                 break;
             case MENU_ITEM_TYPE_05F:
             case MENU_ITEM_TYPE_060:
             case MENU_ITEM_TYPE_061:
             case MENU_ITEM_TYPE_062:
-                func_800A1500(arg0);
+                if (ExtraMaps_Page() && gModeSelection != BATTLE) {
+                    const MenuItem* preview = find_menu_items_dupe(MENU_ITEM_TYPE_064);
+                    const s32 row = arg0->type - MENU_ITEM_TYPE_05F;
+                    const bool thumbnail = preview->state == 3 ||
+                                           (preview->state == 2 && preview->param1 % 4 != row);
+                    if (thumbnail) {
+                        draw_amped_course_art((s32)GetCupIndex(), row, true,
+                                              D_800E7168[row].column, D_800E7168[row].row, 0.5f);
+                    } else {
+                        draw_amped_course_art((s32)GetCupIndex(), row, true, 23, 112, 1.0f);
+                    }
+                } else {
+                    func_800A1500(arg0);
+                }
                 break;
             case COURSE_SELECT_MUSHROOM_CUP:
             case COURSE_SELECT_FLOWER_CUP:
@@ -7419,6 +7878,21 @@ void render_menus(MenuItem* arg0) {
                 break;
             case MENU_ITEM_TYPE_130:
                 if (arg0->state != 0) {
+                    // Ceremony results keep the appearance by cup rank, not
+                    // the shared native physics character (e.g. Goku = Mario).
+                    const s32 appearance = ExtraRacers_CeremonyAppearance(D_802874D8.unk1D);
+                    if (appearance >= 8) {
+                        const s32 x = arg0->column, y = arg0->row;
+                        gDisplayListHead = draw_box_fill(gDisplayListHead, x, y, x + 63, y + 75, 0, 0, 0, 255);
+                        gSPDisplayList(gDisplayListHead++, D_02007708);
+                        gDisplayListHead = func_800963F0(gDisplayListHead, G_IM_FMT_RGBA, 1024, 1024,
+                            1.f, 1.f, 0, 0, 64, 64, x, y,
+                            (u8*)extra_character_portrait_frame(appearance, D_802874D8.unk1D < 3), 64, 64);
+                        gDisplayListHead = draw_box_fill(gDisplayListHead, x, y + 64, x + 63, y + 75, 160, 160, 160, 255);
+                        set_text_color(TEXT_YELLOW);
+                        print_text1_center_mode_1(x + 32, y + 73, (char*)ExtraRacers_Name(appearance), 0, .4f, .4f);
+                        break;
+                    }
                     gDisplayListHead = render_menu_textures(
                          gDisplayListHead, D_800E7D54[D_800EFD64[D_802874D8.unk1E]],
                         arg0->column, arg0->row);
@@ -7969,17 +8443,33 @@ void func_800A1FB0(MenuItem* arg0) {
         case SUB_MENU_OPTION_SOUND_MODE:
         case SUB_MENU_OPTION_COPY_CONTROLLER_PAK:
         case SUB_MENU_OPTION_ERASE_ALL_DATA:
-            for (i = 0; i < ARRAY_COUNT(gTextOptionMenu); i++) {
-                set_text_color_rainbow_if_selected(gSubMenuSelection - SUB_MENU_OPTION_MIN, i, 3);
-                print_text_mode_1(0x00000032, 0x55 + (0x23 * i), gTextOptionMenu[i], 0, 0.9f, 1.0f);
-                if (i == (gSubMenuSelection - SUB_MENU_OPTION_MIN)) {
-                    spE0.column = 0x0032;
-                    spE0.row = 0x55 + (0x23 * i);
-                }
+        case SUB_MENU_OPTION_EIGHT_PLAYERS:
+        case SUB_MENU_OPTION_SIXTEEN_PLAYERS:
+        case SUB_MENU_OPTION_AFK_BOTS:
+        case SUB_MENU_OPTION_EXTRA_CHARACTERS:
+        case SUB_MENU_OPTION_EXTRA_MAPS: {
+            const s32 selected = gSubMenuSelection - SUB_MENU_OPTION_MIN;
+            for (i = 0; i < ARRAY_COUNT(gTextOptionMenu); ++i) {
+                set_text_color_rainbow_if_selected(selected, i, TEXT_YELLOW);
+                print_text_mode_1(42, 68 + 18 * i, gTextOptionMenu[i], 0, 0.65f, 0.72f);
             }
             set_text_color(TEXT_GREEN);
-            print_text1_center_mode_1(0x000000E6, 0x00000078, gSoundModeNames[gSoundMode], 0, 1.0f, 1.0f);
+            print_text1_center_mode_1(268, 86, gSoundModeNames[gSoundMode], 0, 0.65f, 0.72f);
+            for (i = 0; i < GAMEPLAY_OPTION_COUNT; ++i) {
+                const GameplayOption* option = &gGameplayOptions[i];
+                const s32 row = SUB_MENU_OPTION_GAMEPLAY_MIN - SUB_MENU_OPTION_MIN + i;
+                const s32 y = 68 + 18 * row;
+                const bool enabled = CVarGetInteger(option->cvar, option->defaultValue) &&
+                    (row != SUB_MENU_OPTION_EIGHT_PLAYERS - SUB_MENU_OPTION_MIN || !MultiplayerOptions_SixteenEnabled());
+                set_text_color_rainbow_if_selected(selected, row, TEXT_YELLOW);
+                print_text_mode_1(42, y, option->label, 0, 0.65f, 0.72f);
+                set_text_color(enabled ? TEXT_GREEN : TEXT_RED);
+                print_text1_center_mode_1(268, y, enabled ? "ON" : "OFF", 0, 0.65f, 0.72f);
+            }
+            spE0.column = 42;
+            spE0.row = 68 + 18 * selected;
             break;
+        }
         case SUB_MENU_ERASE_QUIT:
         case SUB_MENU_ERASE_ERASE:
             set_text_color(TEXT_YELLOW);
@@ -8272,7 +8762,7 @@ void func_800A2EB8(MenuItem* arg0) {
         arg0->row + 0xE1, gCupNames[D_800DC540], 0, 0.6f, 0.6f);
     print_text1_center_mode_1(
         (temp_s0 - arg0->column) + 0xF5, arg0->row + 0xE1,
-        D_800E76CC[gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]]], 0, 0.6f, 0.6f);
+        (gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] >= 4 ? (gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] == 5 ? "CUSTOM CC" : "200 CC") : D_800E76CC[gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]]]), 0, 0.6f, 0.6f);
 }
 
 void func_800A32B4(s32 arg0, s32 arg1, s32 characterId, s32 rank) {
@@ -8390,7 +8880,7 @@ void func_800A34A8(MenuItem* arg0) {
             arg0->row + 0xE1, gCupNames[D_800DC540], 0, 0.6f, 0.6f);
         print_text1_center_mode_1(
             (temp_s0_3 - arg0->column) + 0xE6, arg0->row + 0xE1,
-            D_800E76CC[gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]]], 0, 0.6f, 0.6f);
+            (gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] >= 4 ? (gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] == 5 ? "CUSTOM CC" : "200 CC") : D_800E76CC[gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]]]), 0, 0.6f, 0.6f);
     }
 }
 
@@ -8901,6 +9391,7 @@ void render_pause_grand_prix(MenuItem* arg0) {
     f32 one = 1.0f;
     f32 optionScale = 0.75f;
     s32 titleCenterX = SCREEN_WIDTH / 2;
+    const char* pauseCupName = ExtraMaps_Page() ? GetCupName() : gCupNames[GetCupIndex()];
 
     temp_v0 = &gScreenContexts[gIsGamePaused - 1];
     temp_v1 = temp_v0->screenStartX;
@@ -8945,12 +9436,12 @@ void render_pause_grand_prix(MenuItem* arg0) {
     }
 
     temp_s3 = &D_800E85C0[(gScreenModeSelection * 4) + (gIsGamePaused - 1)];
-    temp_s0 = ((get_string_width(gCupNames[GetCupIndex()]) * one) + 10.0f) / 2;
+    temp_s0 = ((get_string_width((char*) pauseCupName) * one) + 10.0f) / 2;
     temp_s1 = ((get_string_width(D_800E76CC[gCCSelection]) * one) + 10.0f) / 2;
     set_text_color(TEXT_YELLOW);
-    print_text1_center_mode_1(titleCenterX - temp_s1, temp_s3->row - 50, gCupNames[GetCupIndex()], 0, one, one);
+    print_text1_center_mode_1(titleCenterX - temp_s1, temp_s3->row - 50, (char*) pauseCupName, 0, one, one);
     set_text_color(TEXT_YELLOW);
-    print_text1_center_mode_1(titleCenterX + temp_s0, temp_s3->row - 50, D_800E76CC[gCCSelection], 0, one, one);
+    print_text1_center_mode_1(titleCenterX + temp_s0, temp_s3->row - 50, gRace200cc ? "200 CC" : D_800E76CC[gCCSelection], 0, one, one);
     set_text_color(TEXT_YELLOW);
     print_text1_center_mode_1(titleCenterX, temp_s3->row - 30, CM_GetProps()->Name, 0, one, one);
     for (var_s0 = 0; var_s0 < 2; var_s0++) {
@@ -9556,7 +10047,7 @@ void func_800A72FC(MenuItem* arg0) {
     set_text_color(TEXT_YELLOW);
     print_text1_center_mode_1(arg0->column - ccNameLength, arg0->row, GetCupName(), 0, 1, 1);
     set_text_color(TEXT_YELLOW);
-    print_text1_center_mode_1(arg0->column + cupNameLength, arg0->row, D_800E76DC[gCCSelection], 0, 1, 1);
+    print_text1_center_mode_1(arg0->column + cupNameLength, arg0->row, gRace200cc ? "200 CC" : D_800E76DC[gCCSelection], 0, 1, 1);
 }
 
 void func_800A7448(MenuItem* arg0) {
@@ -9599,6 +10090,17 @@ void func_800A761C(MenuItem* arg0) {
     s32 temp_a0;
 
     temp_a0 = D_802874D8.unk1D + 1;
+    if (temp_a0 > STANDARD_EXPANDED_RACERS) {
+        const s32 lastTwoDigits = temp_a0 % 100;
+        const s32 lastDigit = temp_a0 % 10;
+        const char* suffix = lastTwoDigits >= 11 && lastTwoDigits <= 13 ? "TH" :
+            lastDigit == 1 ? "ST" : lastDigit == 2 ? "ND" : lastDigit == 3 ? "RD" : "TH";
+        char label[32];
+        snprintf(label, sizeof(label), "%s %d%s", gPlaceText[0], temp_a0, suffix);
+        set_text_color(TEXT_BLUE_GREEN_RED_CYCLE_2);
+        print_text1_center_mode_1(arg0->column, arg0->row, label, 0, 1.2f, 1.2f);
+        return;
+    }
     func_800A79F4(temp_a0, sp3C);
     sp48 = ((get_string_width(gPlaceText[0]) + 5) * 1.2f) / 2;
     sp44 = ((get_string_width(gPlaceText[temp_a0]) + 5) * 1.2f) / 2;
@@ -9699,12 +10201,60 @@ void handle_menus_with_pri_arg(s32 priSpecial) {
     s32 i;
     s32 type;
     MenuItem* menuItem;
+    // Menu-item state machines run on the legacy visual cadence. Keep their
+    // input edges separately from the immediate menu navigation path so a
+    // short press between visual ticks is not lost.
+    typedef struct { u16 pressed, released, stickPressed, stickReleased; } MenuEdges;
+    static MenuEdges pending[2][MAX_HUMAN_PLAYERS + 1];
+    static s32 pendingGameState[2] = { -1, -1 };
+    static s32 pendingMenu[2] = { -1, -1 };
+    MenuEdges saved[MAX_HUMAN_PLAYERS + 1];
+    const int priority = priSpecial != 0;
+    const int nativePresentation = GameEngine_IsExperimentalNativePresentation();
 
     if (priSpecial == 0 && LocalMP_GameMenuIsOpen()) {
         LocalMP_DrawGameMenu();
         return;
     }
+    if (priSpecial == 0 && gMenuSelection == CHARACTER_SELECT_MENU && ExtraRacers_Available()) {
+        u8 ready[4];
+        s32 allReady = true;
+        for (s32 player = 0; player < gPlayerCount; ++player) {
+            ready[player] = gCharacterGridIsSelected[player];
+            allReady &= ready[player];
+        }
+        draw_extra_character_select(ready, gPlayerCount, allReady);
+        return;
+    }
 
+    if (!nativePresentation || pendingGameState[priority] != gGamestate || pendingMenu[priority] != gMenuSelection) {
+        memset(pending[priority], 0, sizeof(pending[priority]));
+        pendingGameState[priority] = gGamestate;
+        pendingMenu[priority] = gMenuSelection;
+    }
+    if (nativePresentation) {
+        for (i = 0; i <= MAX_HUMAN_PLAYERS; ++i) {
+            struct Controller* controller = i == MAX_HUMAN_PLAYERS ? gControllerFive : &gControllers[i];
+            saved[i] = (MenuEdges){ controller->buttonPressed, controller->buttonDepressed,
+                                    controller->stickPressed, controller->stickDepressed };
+            pending[priority][i].pressed |= saved[i].pressed;
+            pending[priority][i].released |= saved[i].released;
+            pending[priority][i].stickPressed |= saved[i].stickPressed;
+            pending[priority][i].stickReleased |= saved[i].stickReleased;
+        }
+    }
+
+    for (u32 visualStep = 0; visualStep < gNativeVisualSteps; ++visualStep) {
+    if (nativePresentation) {
+        for (i = 0; i <= MAX_HUMAN_PLAYERS; ++i) {
+            struct Controller* controller = i == MAX_HUMAN_PLAYERS ? gControllerFive : &gControllers[i];
+            controller->buttonPressed = pending[priority][i].pressed;
+            controller->buttonDepressed = pending[priority][i].released;
+            controller->stickPressed = pending[priority][i].stickPressed;
+            controller->stickDepressed = pending[priority][i].stickReleased;
+            memset(&pending[priority][i], 0, sizeof(pending[priority][i]));
+        }
+    }
     for (i = 0; i < MENU_ITEMS_MAX; i++) {
         isRendered = false;
         menuItem = &gMenuItems[i];
@@ -10094,6 +10644,16 @@ void handle_menus_with_pri_arg(s32 priSpecial) {
         }
     }
 
+    }
+    if (nativePresentation) {
+        for (i = 0; i <= MAX_HUMAN_PLAYERS; ++i) {
+            struct Controller* controller = i == MAX_HUMAN_PLAYERS ? gControllerFive : &gControllers[i];
+            controller->buttonPressed = saved[i].pressed;
+            controller->buttonDepressed = saved[i].released;
+            controller->stickPressed = saved[i].stickPressed;
+            controller->stickDepressed = saved[i].stickReleased;
+        }
+    }
     for (j = 0; j < MENU_ITEM_PRIORITY_MAX; j++) {
         for (i = 0; i < MENU_ITEMS_MAX; i++) {
             isRendered = false;
@@ -12069,7 +12629,7 @@ void func_800AC458(MenuItem* arg0) {
             if (arg0->param1 <= 0) {
                 arg0->state = 0x0000000A;
                 arg0->param1 = 0;
-                if (gCourseIndexInCup == 3) {
+                if (gCourseIndexInCup == 3 && !ExtraMaps_Page()) {
                     for (var_a1 = 0; var_a1 < 8; var_a1++) {
                         if (gGetPlayerByCharacterId[gCharacterIdByGPOverallRank[var_a1]] < gPlayerCount) {
                             func_800B536C(var_a1);

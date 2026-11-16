@@ -201,6 +201,8 @@ void func_802846E4(CinematicCamera*);
 void func_802847CC(CinematicCamera*);
 void play_cutscene(CinematicCamera*);
 void ceremony_transition_sliding_borders(void);
+void ceremony_update_sliding_borders(void);
+int NativeCredits_SampleCamera(Camera* camera, float phase, Vec3f pos, Vec3f lookAt, Vec3f up);
 
 /* This is where I'd put my static data, if I had any */
 

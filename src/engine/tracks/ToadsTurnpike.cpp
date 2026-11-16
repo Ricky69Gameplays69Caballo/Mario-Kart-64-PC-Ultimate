@@ -200,7 +200,7 @@ void ToadsTurnpike::BeginPlay() {
 
 void ToadsTurnpike::SomeSounds() {}
 
-void ToadsTurnpike::WhatDoesThisDo(Player* player, int8_t playerId) {
+void ToadsTurnpike::WhatDoesThisDo(Player* player, int16_t playerId) {
     if ((player->type & PLAYER_CINEMATIC_MODE) != PLAYER_CINEMATIC_MODE) {
         if (D_80165300[playerId] != 1) {
             func_800CA288(playerId, 0x1e);
@@ -214,7 +214,7 @@ void ToadsTurnpike::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void ToadsTurnpike::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void ToadsTurnpike::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if ((player->type & PLAYER_CINEMATIC_MODE) != PLAYER_CINEMATIC_MODE) {
         if (D_80165300[playerId] != 1) {
             func_800CA2E4(playerId, 0x1E);

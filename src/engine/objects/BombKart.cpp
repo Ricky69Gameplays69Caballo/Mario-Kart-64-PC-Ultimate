@@ -34,7 +34,7 @@ size_t OBombKart::_count = 0;
 
 namespace {
 bool RaceBombKartsDisabled() {
-    return gGamestate == RACING && gModeSelection != BATTLE && LocalMP_Count() >= 3 &&
+    return gGamestate == RACING && gModeSelection != BATTLE &&
            !CVarGetInteger(CVAR_MULTIPLAYER_RACE_BOMBS, 1);
 }
 }

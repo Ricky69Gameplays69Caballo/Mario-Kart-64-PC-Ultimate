@@ -1,4 +1,6 @@
 #include "port/LocalMultiplayer.h"
+#include "port/NativeFrameTiming.h"
+#include "port/NativeFrameClock.h"
 #include <libultraship.h>
 #include <stdio.h>
 #include <macros.h>
@@ -11,6 +13,7 @@
 #include "waypoints.h"
 #include "replays.h"
 #include "main.h"
+#include "port/Engine.h"
 #include "code_800029B0.h"
 #include "code_80057C60.h"
 #include "update_objects.h"
@@ -82,7 +85,7 @@ void func_8028E028(void) {
             *(gNmiUnknown6 + gPlayerWinningIndex) += 1;
             break;
     }
-    func_800CA118((u8) gPlayerWinningIndex);
+    func_800CA118(gPlayerWinningIndex);
     gRaceState = RACE_FINISHED;
     D_802BA038 = 10;
 }
@@ -109,7 +112,7 @@ void update_player_battle_status(void) {
             player->type |= PLAYER_CINEMATIC_MODE;
             playersDead[deadCounter] = (s16) (player - gPlayerOne);
             deadCounter++;
-            func_800CA118((u8) playerIndex); // play sad character sound?
+            func_800CA118(playerIndex); // play sad character sound?
         } else {
             playersAlive[aliveCounter] = (s16) (player - gPlayerOne);
             aliveCounter++;
@@ -487,7 +490,7 @@ f32 func_8028EE8C(s32 arg0) {
     f32 temp_v1 = gPlayers[arg0].oldPos[2];
     f32 temp_f14 = D_8015F8D0[2] - temp_v0;
     f32 temp_f16 = temp_v1 - D_8015F8D0[2];
-    return gCourseTimer - ((TRACK_TIMER_ITER_f * temp_f14) / (temp_f14 + temp_f16));
+    return NativeFrameCrossingTime(gCourseTimer, TRACK_TIMER_ITER_f, gNativeSimulationTickScale, temp_f14, temp_f16);
 }
 
 void func_8028EEF0(s32 i) {
@@ -522,7 +525,7 @@ void func_8028EF28(void) {
                         D_80150120 = 1;
                     }
 
-                    func_800CA118((u8) i);
+                    func_800CA118(i);
                     if ((D_802BA032 & PLAYER_EXISTS) == 0) {
                         D_802BA032 |= PLAYER_EXISTS;
                     }
@@ -554,7 +557,7 @@ void func_8028EF28(void) {
                                 i = gPlayerPositionLUT[1];
                                 gPlayers[i].triggers |= SPINOUT_TRIGGER;
                                 gPlayers[i].type |= PLAYER_CPU;
-                                func_800CA118((u8) i);
+                                func_800CA118(i);
                                 break;
                             case 3:
                                 if (currentPosition < 3) {
@@ -572,7 +575,7 @@ void func_8028EF28(void) {
                                     }
                                     gPlayers[i].triggers |= SPINOUT_TRIGGER;
                                     gPlayers[i].type |= PLAYER_CPU;
-                                    func_800CA118((u8) i);
+                                    func_800CA118(i);
                                 }
                                 break;
                             case 4:
@@ -587,7 +590,7 @@ void func_8028EF28(void) {
                                     i = gPlayerPositionLUT[3];
                                     gPlayers[i].triggers |= SPINOUT_TRIGGER;
                                     gPlayers[i].type |= PLAYER_CPU;
-                                    func_800CA118((u8) i);
+                                    func_800CA118(i);
                                 }
                                 break;
                         }
@@ -758,7 +761,10 @@ void func_8028F588(void) {
 }
 
 void func_8028F8BC(void) {
-    D_802BA034 = (f32) (D_802BA034 - 0.017f);
+    if (GameEngine_IsExperimentalNativeRace())
+        D_802BA034 = (f32) (D_802BA034 - 0.017f * gNativeSimulationTickScale);
+    else
+        D_802BA034 = (f32) (D_802BA034 - 0.017f);
     if (D_802BA034 < 0.0f) {
         D_802BA034 = 0.0f;
     }
@@ -766,7 +772,10 @@ void func_8028F8BC(void) {
 }
 
 void func_8028F914(void) {
-    D_802BA034 = (f32) (D_802BA034 + 0.028f);
+    if (GameEngine_IsExperimentalNativeRace())
+        D_802BA034 = (f32) (D_802BA034 + 0.028f * gNativeSimulationTickScale);
+    else
+        D_802BA034 = (f32) (D_802BA034 + 0.028f);
     if (D_802BA034 > 1.0f) {
         D_802BA034 = 1.0f;
     }
@@ -877,7 +886,8 @@ void func_8028FC34(void) {
     D_802BA038--;
     if (gControllerFive->buttonPressed != 0) {
         func_8028FBD4();
-        gMenuSelection = START_MENU;
+        gGotoMode = MAIN_MENU_FROM_QUIT;
+        gMenuSelection = MAIN_MENU;
         return;
     }
     if (D_802BA038 == 0) {
@@ -897,7 +907,7 @@ void func_8028FCBC(void) {
     }
     switch (gRaceState) {
         case RACE_INIT:
-            if (!gDemoMode) {
+            if (!gDemoMode && !gQuickTimeTrial) {
                 if (gModeSelection == GRAND_PRIX) {
                     play_sequence2(MUSIC_SEQ_START_GRID_GP_VS);
                     play_sound2(SOUND_ACTION_REV_ENGINE);
@@ -930,6 +940,14 @@ void func_8028FCBC(void) {
             }
             D_800DC5B8 = 1;
 
+            if (gQuickTimeTrial) {
+                D_802BA034 = 1.0f;
+                D_800DC5B0 = 0;
+                func_8028F588();
+                gRaceState = RACE_STAGING;
+                CM_SpawnStarterLakitu();
+                start_race();
+            }
             break;
         case RACE_SETUP:
             func_8028F914();
@@ -1049,6 +1067,16 @@ void func_8028FCBC(void) {
             }
             break;
         case RACE_FINISHED:
+            if (GameEngine_IsExperimentalNativeRace()) {
+                // This countdown is in 60 Hz ticks, not rendered frames.
+                if (gNativeSimulationLegacyTicks == 0) break;
+                if (D_802BA038 != 0 && gNativeSimulationLegacyTicks <= (uint32_t) D_802BA038) {
+                    D_802BA038 -= gNativeSimulationLegacyTicks;
+                    func_8028F4E8();
+                    break;
+                }
+                D_802BA038 = 0;
+            }
             if (D_802BA038 != 0) {
                 D_802BA038--;
             } else {
@@ -1187,7 +1215,11 @@ void func_802903D8(Player* playerOne, Player* playerTwo) {
         }
     } else if (playerTwo->effects & 0x200) {
         playerOne->triggers |= HIT_BY_STAR_TRIGGER;
-    } else {
+    } else if (LocalMP_RacerCount() <= 16 ||
+               !(((playerOne->effects & LIGHTNING_EFFECT) || (playerOne->triggers & LIGHTNING_STRIKE_TRIGGER)) &&
+                 ((playerTwo->effects & LIGHTNING_EFFECT) || (playerTwo->triggers & LIGHTNING_STRIKE_TRIGGER)))) {
+        // In a crowded field, two shocked karts can still push each other
+        // apart without converting either kart's lightning into a squish.
         playerOne->effects |= 0x8000;
         playerTwo->effects |= 0x8000;
     }
@@ -1240,19 +1272,44 @@ void func_802909F0(void) {
     Player* ply2;
     s32 i;
     s32 k;
+    const s32 racers = LocalMP_RacerCount();
+    const bool largeGrid = racers >= LARGE_GRID_OPTIMIZATION_MIN_RACERS;
+    const bool filterDistantKarts = largeGrid && CVarGetInteger(CVAR_LARGE_GRID_COLLISION_FILTER, 0);
+    const bool skipBotContacts = largeGrid && CVarGetInteger(CVAR_LARGE_GRID_SKIP_BOT_CONTACTS, 0);
+    s32 lastHuman = racers - 1;
+    if (skipBotContacts) {
+        while (lastHuman >= 0 && !(gPlayers[lastHuman].type & PLAYER_HUMAN)) {
+            lastHuman--;
+        }
+    }
 
-    for (i = 0; i < LocalMP_RacerCount() - 1; i++) {
+    // Pairs after the last human can only contain bots.
+    for (i = 0; i < racers - 1 && i <= lastHuman; i++) {
         ply = &gPlayers[i];
 
         if ((ply->type & PLAYER_EXISTS) && (!(ply->effects & 0x80000000)) &&
             (!(ply->type & PLAYER_INVISIBLE_OR_BOMB)) && (!(ply->effects & 0x4000000))) {
 
-            for (k = i + 1; k < LocalMP_RacerCount(); k++) {
+            const bool needsHumanPartner = skipBotContacts && !(ply->type & PLAYER_HUMAN);
+            const s32 partnerEnd = needsHumanPartner ? lastHuman + 1 : racers;
+            for (k = i + 1; k < partnerEnd; k++) {
                 ply2 = &gPlayers[k];
+                if (needsHumanPartner && !(ply2->type & PLAYER_HUMAN)) {
+                    continue;
+                }
 
                 if ((ply2->type & PLAYER_EXISTS) && (!(ply2->effects & 0x80000000)) &&
                     (!(ply2->type & PLAYER_INVISIBLE_OR_BOMB)) && (!(ply2->effects & 0x4000000))) {
 
+                    if (filterDistantKarts) {
+                        // Keep contact order and check live positions after each impulse.
+                        // A small margin leaves boundary rounding to the collision solver.
+                        const f32 reach = ply->boundingBoxSize + ply2->boundingBoxSize - 4.99f;
+                        if (fabsf(ply->pos[2] - ply2->pos[2]) > reach ||
+                            fabsf(ply->pos[0] - ply2->pos[0]) > reach) {
+                            continue;
+                        }
+                    }
                     func_802903D8(ply, ply2);
                 }
             }

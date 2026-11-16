@@ -10,6 +10,7 @@
 #include "audio/playback.h"
 #include "audio/external.h"
 #include "port/Engine.h"
+#include "port/ExtraRacers.h"
 
 #include <stdio.h>
 
@@ -54,6 +55,7 @@ char seqplayer_unused_string25[] = "Group:Undefined Command\n";
 // sequence_channel_init
 void sequence_channel_init(struct SequenceChannel* seqChannel) {
     s32 i;
+    ExtraRacers_SetVoiceChannel(seqChannel, 0);
 
     seqChannel->enabled = false;
     seqChannel->finished = false;
@@ -742,7 +744,8 @@ u8 get_instrument(struct SequenceChannel* seqChannel, u8 instId, struct Instrume
         *instOut = NULL;
         return 0;
     }
-    struct Instrument* inst = bank->instruments[instId];
+    struct Instrument* inst = ExtraRacers_AudioInstrument(seqChannel, seqChannel->bankId,
+        instId, bank->instruments[instId]);
     if (inst == NULL) {
         *instOut = NULL;
         return 0;

@@ -166,7 +166,7 @@ void BigDonut::Draw(ScreenContext* arg0) {
 void BigDonut::DrawCredits() {
 }
 
-void BigDonut::Waypoints(Player* player, int8_t playerId) {
+void BigDonut::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = 0;
 }
 

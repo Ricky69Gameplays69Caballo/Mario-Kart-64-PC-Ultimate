@@ -8,6 +8,7 @@
 #include "audio/load.h"
 #include "audio/heap.h"
 #include "audio/data.h"
+#include "port/ExtraRacers.h"
 
 OSMesgQueue D_801937C0;
 OSMesgQueue D_801937D8;
@@ -390,6 +391,10 @@ void func_800CBCB0(u32 arg0) {
                             break;
                         case 8:
                             chan->stopSomething2 = cmd->u2.as_s8;
+                            break;
+                        case 9: // Port-only racer audio routing; consumed on the audio thread.
+                            ExtraRacers_SetVoiceChannel(chan, cmd->u2.as_s8);
+                            break;
                     }
                 }
             }

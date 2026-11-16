@@ -32,8 +32,8 @@ public:
     virtual void TickTrackObjects() override;
     virtual void DrawTrackObjects(s32 cameraId) override;
     virtual void SomeSounds() override;
-    virtual void WhatDoesThisDo(Player* player, int8_t playerId) override;
-    virtual void WhatDoesThisDoAI(Player* player, int8_t playerId) override;
+    virtual void WhatDoesThisDo(Player* player, int16_t playerId) override;
+    virtual void WhatDoesThisDoAI(Player* player, int16_t playerId) override;
     virtual void Draw(ScreenContext*) override;
     virtual void DrawCredits() override;    
     virtual void SomeCollisionThing(Player *player, Vec3f arg1, Vec3f arg2, Vec3f arg3, f32* arg4, f32* arg5, f32* arg6, f32* arg7) override;

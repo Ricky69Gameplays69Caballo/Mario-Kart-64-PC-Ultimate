@@ -363,7 +363,7 @@ struct ItemBox {
                                   // Named "bounding box" to match the name used for the "size" of a kart
     /* 0x0C */ f32 boundingBoxSize;
     /* 0x10 */ Vec3s rot;
-    /* 0x16 */ s16 unk_16;
+    /* 0x16 */ s16 itemOverride;
     /* 0x18 */ Vec3f pos;
     /* 0x24 */ f32 origY; // Original Y position. Basically the Y position the box will reset to after being touched
     /* 0x28 */ f32 unk_028;

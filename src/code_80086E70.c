@@ -1082,7 +1082,7 @@ void func_80089538(s32 objectIndex, s32 playerId, f32 arg2, f32 arg3, u32 soundB
 
     player = &gPlayerOne[playerId];
     if ((func_8008933C(player, objectIndex, arg2, arg3) >= 4.0) && ((player->type & PLAYER_CPU) != PLAYER_CPU)) {
-        func_800C9060((u8) playerId, soundBits);
+        func_800C9060(playerId, soundBits);
     }
 }
 

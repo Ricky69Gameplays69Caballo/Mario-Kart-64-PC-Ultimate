@@ -23,7 +23,9 @@
 #include <sounds.h>
 #include "spawn_players.h"
 #include "port/Game.h"
+#include <libultraship/bridge/consolevariablebridge.h>
 #include "port/LocalMultiplayer.h"
+#include "port/ExtraRacers.h"
 
 /** BSS **/
 s32 gIntroModelZEye;
@@ -69,7 +71,7 @@ s32 gFadeModeSelection = FADE_MODE_NONE;
 s8 gCharacterSelections[NUM_RACERS] = { MARIO, LUIGI, YOSHI, TOAD, DK, WARIO, PEACH, BOWSER };
 
 // The current row selected in the mode column for each player indexed
-// 0-1 for 1P; 0-2 (Grand Prix, Versus, Battle) for 2P, 3P, and 4P.
+// 1P has Grand Prix and Time Trials, with VS as an optional third row.
 s8 gGameModeMenuColumn[NUM_ROWS_GAME_MODE_MENU] = { 0, 0, 0, 0 };
 
 // For Grand Prix and Versus, this will be the CC mode selected. For Time Trials, it will
@@ -106,7 +108,7 @@ s8 gPlayerModeSelection[] = { 1, 2, 2, 2 };
 
 // Limit for each index column in one-two-three-four mode selection
 s8 sGameModePlayerColumnDefault[][3] = {
-    { 2, 1, 0 }, // 1p (GP options, TT options, ...)
+    { 2, 1, 2 }, // 1p (GP options, TT options, VS options)
     { 2, 2, 0 }, // 2p (GP options, VS options, Battle)
     { 2, 2, 0 }, // 3p (GP options, VS options, Battle)
     { 2, 2, 0 }, // 4p (GP options, VS options, Battle)
@@ -115,7 +117,7 @@ s8 sGameModePlayerColumnDefault[][3] = {
 // Limit for each index column in one-two-three-four mode selection
 // for extra mode (mirror mode), hence the extra value (3 instead of 2)
 s8 sGameModePlayerColumnExtra[][3] = {
-    { 3, 1, 0 }, // 1p (GP options, TT options, ...)
+    { 3, 1, 3 }, // 1p (GP options, TT options, VS options)
     { 3, 3, 0 }, // 2p (GP options, VS options, Battle)
     { 3, 3, 0 }, // 3p (GP options, VS options, Battle)
     { 3, 3, 0 }, // 4p (GP options, VS options, Battle)
@@ -123,7 +125,7 @@ s8 sGameModePlayerColumnExtra[][3] = {
 
 // Modes to select in one-two-three-four mode selection
 s32 gGameModePlayerSelection[][3] = {
-    { GRAND_PRIX, TIME_TRIALS, 0x00000000 }, // 1p game modes
+    { GRAND_PRIX, TIME_TRIALS, VERSUS },     // 1p game modes
     { GRAND_PRIX, VERSUS, BATTLE },          // 2p game modes
     { GRAND_PRIX, VERSUS, BATTLE },          // 3p game modes
     { GRAND_PRIX, VERSUS, BATTLE },          // 4p game modes
@@ -244,6 +246,23 @@ void update_menus(void) {
     }
 }
 
+const GameplayOption gGameplayOptions[GAMEPLAY_OPTION_COUNT] = {
+    { "8 PLAYER MODE", CVAR_MULTIPLAYER_EIGHT, 1, MultiplayerOptions_OnEightChanged },
+    { "16 PLAYER MODE", CVAR_MULTIPLAYER_SIXTEEN, 0, NULL },
+    { "TURN AFK PLAYERS INTO BOTS", CVAR_AFK_BOTS, 1, NULL },
+    { "EXTRA CHARACTERS", CVAR_EXTRA_CHARACTERS, 1, NULL },
+    { "EXTRA MAPS", CVAR_EXTRA_MAPS, 1, ExtraMaps_OnChanged },
+};
+static bool sGameplaySixteenChanged;
+static bool sGameplayCharactersChanged;
+
+static void ApplyGameplayMenuChanges(void) {
+    if (sGameplaySixteenChanged) MultiplayerOptions_OnSixteenChanged();
+    if (sGameplayCharactersChanged) ExtraRacers_OnChanged();
+    sGameplaySixteenChanged = false;
+    sGameplayCharactersChanged = false;
+}
+
 /**
  * Navigation of the options menu
  */
@@ -268,6 +287,11 @@ void options_menu_act(struct Controller* controller, u16 controllerIdx) {
             case SUB_MENU_OPTION_RETURN_GAME_SELECT:
             case SUB_MENU_OPTION_SOUND_MODE:
             case SUB_MENU_OPTION_COPY_CONTROLLER_PAK:
+            case SUB_MENU_OPTION_EIGHT_PLAYERS:
+            case SUB_MENU_OPTION_SIXTEEN_PLAYERS:
+            case SUB_MENU_OPTION_AFK_BOTS:
+            case SUB_MENU_OPTION_EXTRA_CHARACTERS:
+            case SUB_MENU_OPTION_EXTRA_MAPS:
             case SUB_MENU_OPTION_ERASE_ALL_DATA: {
                 tempVar = false;
                 if ((btnAndStick & D_JPAD) && (gSubMenuSelection < SUB_MENU_OPTION_MAX)) {
@@ -295,6 +319,7 @@ void options_menu_act(struct Controller* controller, u16 controllerIdx) {
                     sp38->state = gSoundMode;
                 }
                 if (btnAndStick & B_BUTTON) {
+                    ApplyGameplayMenuChanges();
                     func_8009E280();
                     play_sound2(SOUND_MENU_GO_BACK);
                     if (gSoundMode != sp38->state) {
@@ -303,6 +328,26 @@ void options_menu_act(struct Controller* controller, u16 controllerIdx) {
                         update_save_data_backup();
                         sp38->state = gSoundMode;
                     }
+                    return;
+                }
+                if (gSubMenuSelection >= SUB_MENU_OPTION_GAMEPLAY_MIN &&
+                    (btnAndStick & (A_BUTTON | L_JPAD | R_JPAD))) {
+                    const GameplayOption* option = &gGameplayOptions[gSubMenuSelection - SUB_MENU_OPTION_GAMEPLAY_MIN];
+                    const bool current = CVarGetInteger(option->cvar, option->defaultValue) &&
+                        (gSubMenuSelection != SUB_MENU_OPTION_EIGHT_PLAYERS || !MultiplayerOptions_SixteenEnabled());
+                    const bool enabled = !current;
+                    CVarSetInteger(option->cvar, enabled);
+                    if (gSubMenuSelection == SUB_MENU_OPTION_EIGHT_PLAYERS && enabled) {
+                        CVarSetInteger(CVAR_MULTIPLAYER_SIXTEEN, 0);
+                    } else if (gSubMenuSelection == SUB_MENU_OPTION_SIXTEEN_PLAYERS) {
+                        if (enabled) CVarSetInteger(CVAR_MULTIPLAYER_EIGHT, 0);
+                        sGameplaySixteenChanged = true;
+                    } else if (gSubMenuSelection == SUB_MENU_OPTION_EXTRA_CHARACTERS) {
+                        sGameplayCharactersChanged = true;
+                    }
+                    if (option->onChanged) option->onChanged();
+                    CVarSave();
+                    play_sound2(SOUND_MENU_SELECT);
                     return;
                 }
                 if (btnAndStick & A_BUTTON) {
@@ -398,6 +443,7 @@ void options_menu_act(struct Controller* controller, u16 controllerIdx) {
                             return;
                         }
                         case SUB_MENU_OPTION_RETURN_GAME_SELECT: {
+                            ApplyGameplayMenuChanges();
                             func_8009E280();
                             play_sound2(SOUND_MENU_GO_BACK);
                             return;
@@ -874,8 +920,9 @@ void logo_intro_menu_act(struct Controller* controller, UNUSED u16 controllerIdx
     // If any button is pressed then fade audio out
     if ((is_screen_being_faded() == 0) && (btnAndStick)) {
         //! @todo Label audio funcs
-        func_800CA388(0x3C);
-
+        func_800CA388(0x0A);
+        // Skip the remaining startup logos with one press.
+        if (gMenuSelection == HARBOUR_MASTERS_MENU) gMenuSelection = LOGO_INTRO_MENU;
         func_8009E1E4();
     }
 }
@@ -1044,7 +1091,7 @@ void splash_menu_act(struct Controller* controller, u16 controllerIdx) {
         switch (gDebugMenuSelection) {
             case DEBUG_MENU_DISABLED: {
                 isDebug = false;
-                if ((gMenuDelayTimer >= 46) && (btnAndStick & (A_BUTTON | START_BUTTON))) {
+                if ((btnAndStick & (A_BUTTON | START_BUTTON))) {
                     func_8009E1C0();
                     func_800CA330(0x19);
                     play_sound2(SOUND_INTRO_ENTER_MENU);
@@ -1277,15 +1324,21 @@ void setup_game_mode_selected(void) {
     // For Grand Prix and Versus, this will be the CC mode selected. For Time Trials, it will
     // be whether 'Begin' or 'Data' is selected. Not used for Battle.
     s8 subMenuMode = gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]];
+    gRace200cc = false;
+    gRaceCustomCC = false;
     // Determine which game mode was selected based on the number of players and the row selected on the main menu
     switch (gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]]) {
         case GRAND_PRIX:
-            gCCSelection = subMenuMode;
+            gRaceCustomCC = subMenuMode == 5 && CVarGetInteger("gEnableCustomCC", 0);
+            gRace200cc = subMenuMode == 4 && CVarGetInteger("gEnable200cc", 0);
+            gCCSelection = gRace200cc ? CC_150 : (subMenuMode > CC_EXTRA ? CC_150 : subMenuMode);
             gPlaceItemBoxes = 1;
             set_mirror_mode((subMenuMode == CC_EXTRA) ? 1 : 0);
             break;
         case VERSUS:
-            gCCSelection = subMenuMode;
+            gRaceCustomCC = subMenuMode == 5 && CVarGetInteger("gEnableCustomCC", 0);
+            gRace200cc = subMenuMode == 4 && CVarGetInteger("gEnable200cc", 0);
+            gCCSelection = gRace200cc ? CC_150 : (subMenuMode > CC_EXTRA ? CC_150 : subMenuMode);
             gPlaceItemBoxes = 1;
             set_mirror_mode((subMenuMode == CC_EXTRA) ? 1 : 0);
             break;
@@ -1450,7 +1503,8 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                 // L800B3000
                 subMode = gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]];
                 if ((btnAndStick & U_JPAD) && (subMode > 0)) {
-                    gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] -= 1;
+                    gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] -=
+                        (subMode == 5 && !CVarGetInteger("gEnable200cc", 0)) ? (has_unlocked_extra_mode() ? 2 : 3) : (subMode == 4 && !has_unlocked_extra_mode()) ? 2 : 1;
                     reset_cycle_flash_menu();
                     play_sound2(SOUND_MENU_CURSOR_MOVE);
                 }
@@ -1468,9 +1522,16 @@ void main_menu_act(struct Controller* controller, u16 controllerIdx) {
                             cursorMoved = true;
                         }
                     }
+                    s32 selectedMode = gGameModePlayerSelection[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]];
+                    if (CVarGetInteger("gEnable200cc", 0) && (selectedMode == GRAND_PRIX || selectedMode == VERSUS) &&
+                        subMode == (has_unlocked_extra_mode() ? 3 : 2)) cursorMoved = true;
+                    if (CVarGetInteger("gEnableCustomCC", 0) && (selectedMode == GRAND_PRIX || selectedMode == VERSUS) &&
+                        subMode == (CVarGetInteger("gEnable200cc", 0) ? 4 : (has_unlocked_extra_mode() ? 3 : 2))) cursorMoved = true;
                     // L800B3110
                     if (cursorMoved) {
-                        gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]]++;
+                        gGameModeSubMenuColumn[gPlayerCount - 1][gGameModeMenuColumn[gPlayerCount - 1]] +=
+                            (subMode == 4) ? 1 : (subMode == 3 && !CVarGetInteger("gEnable200cc", 0)) ? 2 : (subMode == 2 && !has_unlocked_extra_mode() && !CVarGetInteger("gEnable200cc", 0) && CVarGetInteger("gEnableCustomCC", 0)) ? 3 : (subMode == 2 && !has_unlocked_extra_mode() && CVarGetInteger("gEnable200cc", 0) &&
+                             (selectedMode == GRAND_PRIX || selectedMode == VERSUS)) ? 2 : 1;
                         reset_cycle_flash_menu();
                         play_sound2(SOUND_MENU_CURSOR_MOVE);
                     }
@@ -1583,6 +1644,7 @@ void player_select_menu_act(struct Controller* controller, u16 controllerIdx) {
     u16 btnAndStick;
 
     btnAndStick = (controller->buttonPressed) | (controller->stickPressed);
+    btnAndStick = ExtraRacers_NativeInput(controllerIdx, btnAndStick);
     if (!gEnableDebugMode && btnAndStick & CONT_START) {
         btnAndStick |= A_BUTTON;
     }
@@ -1612,7 +1674,9 @@ void player_select_menu_act(struct Controller* controller, u16 controllerIdx) {
                 if ((btnAndStick & A_BUTTON) && (gCharacterGridIsSelected[controllerIdx] == 0)) {
                     gCharacterGridIsSelected[controllerIdx] = true;
                     i = sCharacterGridOrder[gCharacterGridSelections[controllerIdx] - 1];
-                    func_800C90F4(controllerIdx, 0x2900800e + (i << 4));
+                    if (ExtraRacers_Selected(controllerIdx) != EXTRA_RACERS_RANDOM) {
+                        func_800C90F4(controllerIdx, 0x2900800e + (i << 4));
+                    }
                 }
                 // L800B36F4
                 selected = false;
@@ -2009,6 +2073,7 @@ void load_menu_states(s32 menuSelection) {
                             gCharacterSelections[i] = i;
                         }
                         play_sound2(SOUND_MENU_SELECT_PLAYER);
+                        ExtraRacers_ResetNative();
                     } else {
                         func_800CA008(0, 0);
                         func_800CB2C4();

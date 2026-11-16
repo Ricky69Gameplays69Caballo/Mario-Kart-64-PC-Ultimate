@@ -155,6 +155,16 @@ void SpaghettiGui::DrawMenu() {
         windowIter.second->Draw();
     }
 
+    // Draw the menu pointer through ImGui: native cursor state can remain hidden
+    // after fullscreen/capture changes, even after asking the backend to show it.
+    const bool menuVisible = GetMenuOrMenubarVisible();
+    if (menuVisible && wnd->IsMouseCaptured()) {
+        wnd->SetMouseCapture(false);
+    }
+    ImGui::GetIO().MouseDrawCursor = menuVisible;
+    wnd->SetForceCursorVisibility(true);
+    wnd->SetCursorVisibility(!menuVisible && !CVarGetInteger("gSettings.HideMouse", 1));
+
     ImGui::End();
     LocalMP_DrawUI();
     if (CVarGetInteger("gShowFpsCounter", 0)) {

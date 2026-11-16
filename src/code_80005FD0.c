@@ -1,4 +1,5 @@
 #include "port/LocalMultiplayer.h"
+#include "port/NativeFrameTiming.h"
 #include <libultraship.h>
 #include <macros.h>
 #include <defines.h>
@@ -101,6 +102,8 @@ u16 D_801631E0[NUM_RACERS];
 u16 D_801631F8[NUM_RACERS];
 f32 gCurrentCpuTargetSpeed;
 f32 gPreviousCpuTargetSpeed[NUM_RACERS];
+static f32 sBalancedBotPace[NUM_RACERS];
+static bool sRealBotBalance;
 s32 D_80163238;
 u16 D_80163240[NUM_RACERS];
 u16 gWrongDirectionCounter[NUM_RACERS];
@@ -148,6 +151,7 @@ s16 D_801634EC;
 s32 D_801634F0;
 s32 D_801634F4;
 TrackPositionFactorInstruction gPlayerTrackPositionFactorInstruction[NUM_RACERS];
+static bool sSpreadYoshiValleyBotLanes;
 TrackPathPoint* gVehicle2DPathPoint;
 s32 gVehicle2DPathSize;
 TrackPathPoint* gVehiclePath;
@@ -763,7 +767,43 @@ void set_places(void) {
         }
     }
 
-    for (playerId = 0; playerId < var_t4 - 1; playerId++) {
+    if (var_t4 >= 500 && CVarGetInteger(CVAR_LARGE_GRID_FAST_RANKING, 0)) {
+        // Sort only movable entries. Finished/fixed entries keep their slots,
+        // matching the original ranking logic without its quadratic scan.
+        s32 positions[NUM_RACERS], order[NUM_RACERS], scratch[NUM_RACERS];
+        s32 count = 0;
+        for (s32 i = 0; i < var_t4; ++i) {
+            if (!(gPlayers[gGPCurrentRacePlayerIdByRank[i]].type & 0x800)) {
+                positions[count] = i;
+                order[count++] = i;
+            }
+        }
+        for (s32 width = 1; width < count; width *= 2) {
+            for (s32 start = 0; start < count; start += width * 2) {
+                s32 middle = start + width < count ? start + width : count;
+                s32 end = start + width * 2 < count ? start + width * 2 : count;
+                s32 left = start, right = middle, dest = start;
+                while (left < middle || right < end) {
+                    if (right >= end || (left < middle &&
+                        gCourseCompletionPercentByRank[order[left]] >= gCourseCompletionPercentByRank[order[right]]))
+                        scratch[dest++] = order[left++];
+                    else scratch[dest++] = order[right++];
+                }
+            }
+            for (s32 i = 0; i < count; ++i) order[i] = scratch[i];
+        }
+        // Preserve source values while writing the sorted slots.
+        s32 sortedPlayers[NUM_RACERS];
+        f32 sortedProgress[NUM_RACERS];
+        for (s32 i = 0; i < count; ++i) {
+            sortedPlayers[i] = sp80[order[i]];
+            sortedProgress[i] = gCourseCompletionPercentByRank[order[i]];
+        }
+        for (s32 i = 0; i < count; ++i) {
+            sp80[positions[i]] = sortedPlayers[i];
+            gCourseCompletionPercentByRank[positions[i]] = sortedProgress[i];
+        }
+    } else for (playerId = 0; playerId < var_t4 - 1; playerId++) {
         if ((gPlayers[gGPCurrentRacePlayerIdByRank[playerId]].type & 0x800)) {
             continue;
         }
@@ -1096,13 +1136,63 @@ void func_80007FA4(s32 arg0, Player* player, f32 arg2) {
     }
 }
 
+static bool is_cpu_race_bot(s32 playerId) {
+    const u16 type = gPlayers[playerId].type;
+    return (type & (PLAYER_EXISTS | PLAYER_CPU | PLAYER_HUMAN)) == (PLAYER_EXISTS | PLAYER_CPU);
+}
+
+static bool uses_balanced_bot_pace(s32 playerId) {
+    return is_cpu_race_bot(playerId) && (sRealBotBalance || D_80163330[playerId] == 0);
+}
+
+static void assign_balanced_bot_paces(s32 racerCount) {
+    const f32 slowestPace = 0.86f;
+    s32 botCount = 0;
+    s32 botIndex = 0;
+
+    sRealBotBalance = false;
+    const bool realBalance = CVarGetInteger(CVAR_REAL_BOT_BALANCE, 0) != 0;
+    if ((!realBalance && !CVarGetInteger(CVAR_BALANCED_BOTS, 0)) || gDemoMode != DEMO_MODE_INACTIVE || IsPodiumCeremony() ||
+        (gModeSelection != GRAND_PRIX && gModeSelection != VERSUS)) {
+        return;
+    }
+    sRealBotBalance = realBalance;
+    const f32 fastestPace = sRealBotBalance ? 1.0f : 0.98f;
+    for (s32 i = 0; i < racerCount; i++) {
+        botCount += uses_balanced_bot_pace(i);
+    }
+    for (s32 i = 0; i < racerCount; i++) {
+        if (uses_balanced_bot_pace(i)) {
+            const f32 fraction = botCount > 1 ? (f32) botIndex / (botCount - 1) : (sRealBotBalance ? 0.0f : 0.5f);
+            sBalancedBotPace[i] = fastestPace + (slowestPace - fastestPace) * fraction;
+            botIndex++;
+        }
+    }
+}
+
 void regulate_cpu_speed(s32 playerId, f32 targetSpeed, Player* player) {
     f32 var_f2;
     f32 var_f0;
     UNUSED s32 thing;
     s32 var_a1;
+    const bool balanced = sBalancedBotPace[playerId] > 0.0f && targetSpeed > 0.0f &&
+                          !(player->type & PLAYER_CINEMATIC_MODE) && !CVarGetInteger("gHarderCPU", 0);
+    const bool realBalance = balanced && sRealBotBalance;
+    const bool rival = D_80163330[playerId] == 1 && !realBalance;
+
+    if (balanced) {
+        targetSpeed *= sBalancedBotPace[playerId];
+    }
 
     var_f2 = player->speed;
+    // At high custom speeds the regular rubber-band and FAST behaviors can
+    // ignore the steering target. Enforce the turn-speed limit before them.
+    if (gRaceCustomCC && CVarGetFloat("gCustomCC", 150.0f) > 200.0f &&
+        !(player->type & PLAYER_CINEMATIC_MODE) && targetSpeed > 0.0f && var_f2 > targetSpeed) {
+        player->effects &= ~0x00200000;
+        player_decelerate_alternative(player, 5.0f);
+        return;
+    }
     if (!(player->effects & 0x80) && !(player->effects & 0x40) && !(player->effects & 0x20000) &&
         !(player->triggers & VERTICAL_TUMBLE_TRIGGER) && !(player->triggers & HIT_BY_STAR_TRIGGER) && !(player->triggers & HIGH_TUMBLE_TRIGGER) &&
         !(player->triggers & LOW_TUMBLE_TRIGGER)) {
@@ -1127,7 +1217,7 @@ void regulate_cpu_speed(s32 playerId, f32 targetSpeed, Player* player) {
                     var_f0 = 3.75f;
                     break;
             }
-            if (var_f2 < var_f0) {
+            if (var_f2 < var_f0 && (!realBalance || var_f2 < targetSpeed)) {
                 player->effects &= ~0x00200000;
                 player_accelerate_alternative(player);
             } else if (player->type & 0x800) {
@@ -1138,9 +1228,11 @@ void regulate_cpu_speed(s32 playerId, f32 targetSpeed, Player* player) {
                     player->effects &= ~0x00200000;
                     player_decelerate_alternative(player, 1.0f);
                 }
-            } else if ((D_801631E0[playerId] == 1) && (D_80163330[playerId] != 1)) {
-                if (func_800088D8(playerId, gLapCountByPlayerId[playerId], gGPCurrentRaceRankByPlayerIdDup[playerId]) ==
-                    1) {
+            } else if ((D_801631E0[playerId] == 1) && !rival) {
+                // The distant CPU path normally uses only the pack gap to regulate pace.
+                if ((realBalance || func_800088D8(playerId, gLapCountByPlayerId[playerId],
+                                                  gGPCurrentRaceRankByPlayerIdDup[playerId])) &&
+                    (!balanced || var_f2 < targetSpeed)) {
                     player->effects |= 0x200000;
                     player_accelerate_alternative(player);
                 } else {
@@ -1173,10 +1265,10 @@ void regulate_cpu_speed(s32 playerId, f32 targetSpeed, Player* player) {
                     if (var_f2 < targetSpeed) {
                         if ((gDemoMode == 1) && (!IsPodiumCeremony())) {
                             player_accelerate_alternative(player);
-                        } else if (D_80163330[playerId] == 1) {
+                        } else if (rival) {
                             func_80007D04(playerId, player);
-                        } else if (func_800088D8(playerId, gLapCountByPlayerId[playerId],
-                                                 gGPCurrentRaceRankByPlayerIdDup[playerId]) == 1) {
+                        } else if (realBalance || func_800088D8(playerId, gLapCountByPlayerId[playerId],
+                                                                gGPCurrentRaceRankByPlayerIdDup[playerId])) {
                             player->effects |= 0x200000;
                             player_accelerate_alternative(player);
                         } else {
@@ -1452,7 +1544,7 @@ void update_cpu_path_completion(s32 playerId, Player* player) {
 f32 func_80009258(UNUSED s32 playerId, f32 arg1, f32 arg2) {
     f32 temp_f2 = gPathStartZ - arg2;
     f32 temp_f12 = arg1 - gPathStartZ;
-    return gCourseTimer - ((TRACK_TIMER_ITER_f * temp_f2) / (temp_f2 + temp_f12));
+    return NativeFrameCrossingTime(gCourseTimer, TRACK_TIMER_ITER_f, gNativeSimulationTickScale, temp_f2, temp_f12);
 }
 
 void update_player_path_completion(s32 playerId, Player* player) {
@@ -1636,6 +1728,37 @@ void update_player(s32 playerId) {
     f32 onePointFive = 1.5f;
 
     player = &gPlayers[playerId];
+    // Update far-away bot decisions at a lower rate, while applying their
+    // cached steering and throttle on every simulation tick.
+    const bool lowHzBots = CVarGetInteger(CVAR_LARGE_GRID_LOW_HZ_BOTS, 0);
+    const bool batchPaths = CVarGetInteger(CVAR_LARGE_GRID_BOT_PATH_BATCHING, 0);
+    if (playerId > 0 && LocalMP_RacerCount() >= 500 && (lowHzBots || batchPaths) && !gDemoMode &&
+        (player->type & (PLAYER_EXISTS | PLAYER_CPU)) == (PLAYER_EXISTS | PLAYER_CPU) &&
+        !(player->type & (PLAYER_HUMAN | PLAYER_CINEMATIC_MODE | PLAYER_INVISIBLE_OR_BOMB)) &&
+        !(player->lakituProps & (HELD_BY_LAKITU | LAKITU_SCENE)) &&
+        gNumPathPointsTraversed[playerId] > 10 && gPreviousCpuTargetSpeed[playerId] > 0.0f) {
+        f32 nearestSquared = 3000.0f * 3000.0f;
+        for (s32 human = 0; human < LocalMP_Count(); human++) {
+            f32 dx = player->pos[0] - gPlayers[human].pos[0];
+            f32 dz = player->pos[2] - gPlayers[human].pos[2];
+            f32 distanceSquared = dx * dx + dz * dz;
+            if (distanceSquared < nearestSquared) nearestSquared = distanceSquared;
+        }
+        s32 period = 1;
+        if (lowHzBots && nearestSquared >= 900.0f * 900.0f)
+            period = nearestSquared >= 3000.0f * 3000.0f ? 8 : 4;
+        else if (batchPaths && nearestSquared >= 3000.0f * 3000.0f)
+            period = 4;
+        if (period > 1 && ((gIncrementUpdatePlayer + playerId) % period) != 0) {
+            // Item strategies normally run on the opposite parity from path
+            // decisions. Those ticks are precisely the ones we skip here.
+            if ((playerId & 1) != (gIncrementUpdatePlayer & 1) && !IsPodiumCeremony())
+                cpu_use_item_strategy(playerId);
+            apply_cpu_turn(player, gPreviousAngleSteering[playerId]);
+            regulate_cpu_speed(playerId, gPreviousCpuTargetSpeed[playerId], player);
+            return;
+        }
+    }
     if ((s32) CM_GetProps()->AIMaximumSeparation >= 0) {
         D_80163100[playerId] += 1;
         if (playerId == 0) {
@@ -1720,7 +1843,9 @@ void update_player(s32 playerId) {
                     }
                     gPlayerTrackPositionFactorInstruction[playerId].unkC = 0.0f;
                 }
-                if (gPlayerPathIndex > 0) {
+                const bool useValleyLane = sSpreadYoshiValleyBotLanes &&
+                                           !(player->type & (PLAYER_HUMAN | PLAYER_CINEMATIC_MODE));
+                if (gPlayerPathIndex > 0 && !useValleyLane) {
                     gPlayerTrackPositionFactorInstruction[playerId].target = 0.0f;
                     gPlayerTrackPositionFactorInstruction[playerId].unkC = 0.0f;
                 }
@@ -1737,7 +1862,8 @@ void update_player(s32 playerId) {
                 // Old vehicle draw method was here
 
                 if ((IsYoshiValley()) || (IsPodiumCeremony())) {
-                    gPlayerTrackPositionFactorInstruction[playerId].target = 0.0f;
+                    TrackPositionFactorInstruction* lane = &gPlayerTrackPositionFactorInstruction[playerId];
+                    lane->target = useValleyLane ? lane->unkC : 0.0f;
                 } else if (IsToadsTurnpike()) {
                     // update_player_track_position_factor_from_box_trucks(playerId);
                     // update_player_track_position_factor_from_buses(playerId);
@@ -1769,7 +1895,9 @@ void update_player(s32 playerId) {
                         return;
                     }
                     if ((LocalMP_Count() > 0) && (LocalMP_Count() < LocalMP_RacerCount()) && (D_80163330[playerId] == 1) &&
-                        (D_8016334C[playerId] < gGPCurrentRaceRankByPlayerId[playerId])) {
+                        (D_8016334C[playerId] < gGPCurrentRaceRankByPlayerId[playerId]) &&
+                        !(sRealBotBalance && sBalancedBotPace[playerId] > 0.0f &&
+                          !(player->type & PLAYER_CINEMATIC_MODE) && !CVarGetInteger("gHarderCPU", 0))) {
                         gPreviousCpuTargetSpeed[playerId] = 8.333333f;
                     } else if (D_80162FD0 == (s16) 1U) {
                         gPreviousCpuTargetSpeed[playerId] = CM_GetProps()->D_0D0096B8[gCCSelection];
@@ -1979,7 +2107,8 @@ void update_player(s32 playerId) {
                     cpu_TargetSpeed[playerId] = CM_GetProps()->D_0D0096B8[gCCSelection];
                 }
 
-                if (CVarGetInteger("gEnableCustomCC", 0) == 1) {
+                if ((gRace200cc && gModeSelection != BATTLE) ||
+                    gRaceCustomCC) {
 #define calc_a(x, y, x2, y2) (y2 - y) / (x2 - x)
 #define calc_b(x, y, b) y - (b * x)
                     f32 a;
@@ -1988,7 +2117,7 @@ void update_player(s32 playerId) {
 #define calc(table)                                   \
     a = calc_a(50, table[CC_50], 150, table[CC_150]); \
     b = calc_b(50, table[CC_50], a);                  \
-    cpu_TargetSpeed[playerId] = a * CVarGetFloat("gCustomCC", 150.0f) + b;
+    cpu_TargetSpeed[playerId] = a * (gRace200cc && gModeSelection != BATTLE ? 200.0f : CVarGetFloat("gCustomCC", 150.0f)) + b;
                     // end of define
                     if ((gIsPlayerInCurve[playerId] == true) || (D_801630E8[playerId] == 1) ||
                         (D_801630E8[playerId] == -1) ||
@@ -2016,6 +2145,21 @@ void update_player(s32 playerId) {
                     cpu_TargetSpeed[playerId] = player->topSpeed * 1.5f;
                 }
 
+                // Look ahead along this bot's current path, so it brakes before
+                // entering bends rather than reacting after it has passed them.
+                if (gRaceCustomCC && CVarGetFloat("gCustomCC", 150.0f) > 200.0f &&
+                    gSelectedPathCount > 0 && gCurrentTrackConsecutiveCurveCountsPath != NULL) {
+                    bool approachingCurve = false;
+                    for (s32 ahead = 0; ahead <= 18; ahead++) {
+                        u16 point = (sSomeNearestPathPoint + ahead) % gSelectedPathCount;
+                        if (are_in_curve(playerId, point)) { approachingCurve = true; break; }
+                    }
+                    f32 limit = approachingCurve ? CM_GetProps()->CurveTargetSpeed[CC_150] * 1.08f :
+                                                  CM_GetProps()->NormalTargetSpeed[CC_150] * 1.35f;
+                    if (gTrackPositionFactor[playerId] > 0.85f || gTrackPositionFactor[playerId] < -0.85f)
+                        limit = CM_GetProps()->OffTrackTargetSpeed[CC_150];
+                    if (limit > 0.0f && cpu_TargetSpeed[playerId] > limit) cpu_TargetSpeed[playerId] = limit;
+                }
                 gCurrentCpuTargetSpeed = cpu_TargetSpeed[playerId];
                 player->effects &= ~UNKNOWN_EFFECT_0x200000;
                 gPreviousCpuTargetSpeed[playerId] = gCurrentCpuTargetSpeed;
@@ -2041,12 +2185,12 @@ void func_8000B140(s32 playerId) {
     f32 var_f18;
     f32 var_f20;
     UNUSED s32 pad[5];
-    s16 spB0[NUM_RACERS];
+    s16 spB0[2];
     UNUSED f32 pad2;
-    s16 sp9C[NUM_RACERS];
+    s16 sp9C[2];
     UNUSED f32 pad3;
     f32 temp_f2;
-    f32 sp74[NUM_RACERS];
+    f32 sp74[2];
     s32 temp_a1_2;
     Player* player;
     player = &gPlayers[playerId];
@@ -2091,10 +2235,15 @@ void func_8000B140(s32 playerId) {
 
     currPathPoint = gNearestPathPointByPlayerId[playerId];
     temp_f22 = (player->speed / 18.0f) * 216.0f;
-    for (i = 0; i < LocalMP_RacerCount(); i++) {
+    for (i = 0; i < 2; i++) {
         sp9C[i] = -1;
         spB0[i] = 0x03E8;
     }
+    // When bot contacts are disabled, bots can pass through other bots.
+    // Only humans need avoidance; searching every bot is quadratic.
+    const bool humanOnly = LocalMP_RacerCount() >= 500 &&
+        CVarGetInteger(CVAR_LARGE_GRID_SKIP_BOT_CONTACTS, 0) && !(player->type & PLAYER_HUMAN);
+    const s32 avoidanceCount = humanOnly ? LocalMP_Count() : LocalMP_RacerCount();
 
     if (D_80163010[playerId] > 0) {
         D_80163010[playerId]--;
@@ -2104,7 +2253,7 @@ void func_8000B140(s32 playerId) {
     }
     j = 0;
     i = 0;
-    while (i < LocalMP_RacerCount()) {
+    while (i < avoidanceCount) {
         if (i != playerId) {
             player = &gPlayers[i];
             if ((player->type & PLAYER_EXISTS)) {
@@ -3489,6 +3638,40 @@ void init_course_path_point(void) {
     func_8000EEDC();
 }
 
+static void assign_expanded_bot_lanes(s32 racerCount) {
+    sSpreadYoshiValleyBotLanes = false;
+    if (gDemoMode != DEMO_MODE_INACTIVE || IsPodiumCeremony() ||
+        (gModeSelection != GRAND_PRIX && gModeSelection != VERSUS)) {
+        return;
+    }
+
+    s32 botCount = 0;
+    for (s32 playerId = 0; playerId < racerCount; playerId++) {
+        botCount += is_cpu_race_bot(playerId);
+    }
+    if (botCount <= 7) {
+        return;
+    }
+
+    // Round up from the original ratio of three lanes for seven bots.
+    const s32 laneCount = (botCount * 3 + 6) / 7;
+    const f32 originalOuterLane = CM_GetProps()->AIMinimumSeparation;
+    // Yoshi Valley originally centers every bot. Use only a narrow band on its branches.
+    const f32 outerLane = originalOuterLane > 0.0f ? originalOuterLane : 0.1f;
+    sSpreadYoshiValleyBotLanes = IsYoshiValley();
+
+    s32 botIndex = 0;
+    for (s32 playerId = 0; playerId < racerCount; playerId++) {
+        if (is_cpu_race_bot(playerId)) {
+            const s32 lane = botIndex % laneCount;
+            const f32 offset = outerLane * (2.0f * lane / (laneCount - 1) - 1.0f);
+            gPlayerTrackPositionFactorInstruction[playerId].unkC = offset;
+            gPlayerTrackPositionFactorInstruction[playerId].target = offset;
+            botIndex++;
+        }
+    }
+}
+
 void init_players(void) {
 
     UNUSED Camera* camera;
@@ -3497,6 +3680,10 @@ void init_players(void) {
     TrackPositionFactorInstruction* var_s5;
     UNUSED s32 temp_v1;
     UNUSED s32 pad;
+
+    for (i = 0; i < NUM_RACERS; i++) {
+        sBalancedBotPace[i] = 0.0f;
+    }
 
     for (i = 0; i < LocalMP_RacerCount(); i++) {
         Player* player = &gPlayerOne[i];
@@ -3619,11 +3806,18 @@ void init_players(void) {
         }
     }
 
+    assign_expanded_bot_lanes(LocalMP_RacerCount());
+    assign_balanced_bot_paces(LocalMP_RacerCount());
+
     for (i = 0; i < LocalMP_RacerCount(); i++) {
         if (1) {};
         gPathIndexByPlayerId[i] = 0;
-        gNearestPathPointByPlayerId[i] =
-            gPathCountByPathIndex[gPathIndexByPlayerId[i]] - gGPCurrentRaceRankByPlayerId[i] - 4;
+        if (LocalMP_IsActive() && LocalMP_RacerCount() > STANDARD_EXPANDED_RACERS) {
+            const Player* player = &gPlayers[i];
+            gNearestPathPointByPlayerId[i] = func_8000BD94(player->pos[0], player->pos[1], player->pos[2], 0);
+        } else {
+            gNearestPathPointByPlayerId[i] = gPathCountByPathIndex[0] - gGPCurrentRaceRankByPlayerId[i] - 4;
+        }
     }
 
     gIsInExtra = 0;
@@ -5062,12 +5256,12 @@ void handle_vehicle_interactions(s32 playerId, Player* player, VehicleStuff* veh
                     (((temp_f14) > -300.0)) && ((temp_f14) < 300.0)) {
                     if ((sVehicleSoundRenderCounter > 0) && (vehicle->someFlags == 0)) {
                         sVehicleSoundRenderCounter -= 1;
-                        vehicle->someFlags |= (RENDER_VEHICLE << playerId);
+                        vehicle->someFlags |= (1u << playerId);
                         func_800C9D80(vehicle->position, vehicle->velocity, soundBits);
                     }
                 } else {
                     if (vehicle->someFlags != 0) {
-                        vehicle->someFlags &= ~(RENDER_VEHICLE << playerId);
+                        vehicle->someFlags &= ~(1u << playerId);
                         if (vehicle->someFlags == 0) {
                             sVehicleSoundRenderCounter += 1;
                             func_800C9EF4(vehicle->position, soundBits);
@@ -5077,7 +5271,7 @@ void handle_vehicle_interactions(s32 playerId, Player* player, VehicleStuff* veh
 
                 if (((temp_f12) > -200.0) && ((temp_f12) < 200.0) && ((temp_f22 > -20.0)) && (temp_f22 < 20.0) &&
                     (((temp_f14) > -200.0)) && ((temp_f14) < 200.0)) {
-                    if (!(vehicle->someFlagsTheSequel & ((1 << playerId)))) {
+                    if (!(vehicle->someFlagsTheSequel & ((1u << playerId)))) {
 
                         s32 var_s1 = 0;
                         u16 path = gPathCountByPathIndex[0];
@@ -5110,7 +5304,7 @@ void handle_vehicle_interactions(s32 playerId, Player* player, VehicleStuff* veh
                                             var_s1 = 1;
                                         }
                                     } else {
-                                        vehicle->someFlagsTheSequel |= ((1 << playerId));
+                                        vehicle->someFlagsTheSequel |= ((1u << playerId));
                                     }
                                 }
                                 break;
@@ -5148,13 +5342,13 @@ void handle_vehicle_interactions(s32 playerId, Player* player, VehicleStuff* veh
                                     }
                                     break;
                             }
-                            vehicle->someFlagsTheSequel |= ((1 << playerId));
+                            vehicle->someFlagsTheSequel |= ((1u << playerId));
                             func_800C98B8(vehicle->position, vehicle->velocity, soundBits2);
                         }
                     }
                 } else {
-                    if (vehicle->someFlagsTheSequel & ((1 << playerId))) {
-                        vehicle->someFlagsTheSequel &= ~((1 << playerId));
+                    if (vehicle->someFlagsTheSequel & ((1u << playerId))) {
+                        vehicle->someFlagsTheSequel &= ~((1u << playerId));
                     }
                 }
             }
@@ -7032,10 +7226,25 @@ void func_8001AAAC(s16 arg0, s16 arg1, s16 arg2) {
     }
 }
 
+static size_t sExtraBotRouletteEnd[NUM_RACERS];
+static s16 sExtraBotRouletteFixed[NUM_RACERS];
+static bool sExtraBotRoulettePending[NUM_RACERS];
+
+void ExtraBot_StartItemRoulette(s32 playerId, s16 fixedItem) {
+    if (playerId < 0 || playerId >= NUM_RACERS || !LocalMP_ExtraBotUsesItemBoxes(playerId) ||
+        sExtraBotRoulettePending[playerId] || cpu_ItemStrategy[playerId].branch != CPU_STRATEGY_WAIT_NEXT_ITEM)
+        return;
+    sExtraBotRouletteFixed[playerId] = fixedItem;
+    // 180-420 legacy ticks: approximately 3-7 seconds at 60 Hz.
+    sExtraBotRouletteEnd[playerId] = gTickCounter + 180 + ((u32)random_u16() * 241 >> 16);
+    sExtraBotRoulettePending[playerId] = true;
+}
+
 void func_8001AB00(void) {
     s32 var_v1;
 
     for (var_v1 = 0; var_v1 < LocalMP_RacerCount(); var_v1++) {
+        sExtraBotRoulettePending[var_v1] = false;
         cpu_ItemStrategy[var_v1].branch = CPU_STRATEGY_WAIT_NEXT_ITEM;
         cpu_ItemStrategy[var_v1].timer = 0;
         cpu_ItemStrategy[var_v1].actorIndex = -1;
@@ -7076,7 +7285,8 @@ void cpu_decisions_branch_item(UNUSED s32 playerId, s16* branch, s32 itemId) {
             break;
     }
 
-    if (CVarGetInteger("gHarderCPU", false) == true) {
+    if (CVarGetInteger("gHarderCPU", false) == true || CVarGetInteger("gCheats.ItemFilterEnabled", 0) ||
+        LocalMP_ExtraBotUsesItemBoxes(playerId)) {
         switch (itemId) {
             case ITEM_NONE:
                 value = -1;
@@ -7156,9 +7366,21 @@ void cpu_use_item_strategy(s32 playerId) {
         return;
     }
 
+    if (LocalMP_ExtraBotUsesItemBoxes(playerId) && sExtraBotRoulettePending[playerId]) {
+        if (gTickCounter < sExtraBotRouletteEnd[playerId]) return;
+        sExtraBotRoulettePending[playerId] = false;
+        const s16 fixedItem = sExtraBotRouletteFixed[playerId];
+        const s32 item = fixedItem && !CVarGetInteger("gCheats.ItemFilterEnabled", 0) ? fixedItem :
+                         RaceManager_GetRandomCPUItem(gGPCurrentRaceRankByPlayerId[playerId]);
+        cpu_decisions_branch_item(playerId, &cpuStrategy->branch, item);
+        return;
+    }
+
     switch (cpuStrategy->branch) {
         case CPU_STRATEGY_WAIT_NEXT_ITEM:
             cpuStrategy->actorIndex = -1;
+            // Extra bots get their next item from an actual box collision.
+            if (LocalMP_ExtraBotUsesItemBoxes(playerId)) break;
 
             // Harder CPU Items
             if (((gNumPathPointsTraversed[playerId] + (playerId * 20) + 100) % 8 == 0) && (cpuStrategy->timer >= 512) &&
@@ -7167,7 +7389,9 @@ void cpu_use_item_strategy(s32 playerId) {
                 cpu_decisions_branch_item(playerId, &cpuStrategy->branch,
                                           RaceManager_GetRandomCPUItem(gGPCurrentRaceRankByPlayerId[playerId]));
                 // Stock CPU Items
-            } else if ((((playerId * 20) + 100) < gNumPathPointsTraversed[playerId]) && (cpuStrategy->timer >= 0x259) &&
+            } else if (((((CVarGetInteger("gCheats.ItemFilterEnabled", 0) && LocalMP_RacerCount() > NUM_PLAYERS) ?
+                           (playerId % NUM_PLAYERS) : playerId) * 20 + 100) < gNumPathPointsTraversed[playerId]) &&
+                       (cpuStrategy->timer >= 0x259) &&
                        (cpuStrategy->numItemUse < 3) && (gLapCountByPlayerId[playerId] < 3)) {
                 cpu_decisions_branch_item(
                     playerId, &cpuStrategy->branch,
@@ -7240,6 +7464,7 @@ void cpu_use_item_strategy(s32 playerId) {
                  (BANANA_ACTOR(actor)->state != HELD_BANANA)) ||
                 (playerId != BANANA_ACTOR(actor)->playerId)) {
             } else {
+                Audio_PlayNearbyBotItem(playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x12));
                 BANANA_ACTOR(actor)->state = DROPPED_BANANA;
                 BANANA_ACTOR(actor)->velocity[0] = 0.0f;
                 BANANA_ACTOR(actor)->velocity[1] = 0.0f;
@@ -7377,9 +7602,7 @@ void cpu_use_item_strategy(s32 playerId) {
                     SHELL_ACTOR(actor)->velocity[1] = somePosVel[1];
                     SHELL_ACTOR(actor)->velocity[2] = somePosVel[2];
                     SHELL_ACTOR(actor)->state = MOVING_SHELL;
-                    func_800C9060(SHELL_ACTOR(actor)->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
-                    func_800C90F4(SHELL_ACTOR(actor)->playerId,
-                                  (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x00));
+                    Audio_PlayNearbyBotItem(playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
                     add_green_shell_in_unexpired_actor_list(CM_FindActorIndex(SHELL_ACTOR(actor)));
                 }   
                 else 
@@ -7516,6 +7739,7 @@ void cpu_use_item_strategy(s32 playerId) {
                          (BANANA_BUNCH_ACTOR(actor)->state == 6)) &&
                         (isValidBanana1 == true)) {
                         drop_banana_in_banana_bunch((struct BananaBunchParent*) actor);
+                        Audio_PlayNearbyBotItem(playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x12));
                     }
                     cpuStrategy->numDroppedBananaBunch += 1;
                 } else {
@@ -7558,6 +7782,7 @@ void cpu_use_item_strategy(s32 playerId) {
                 (playerId != ((s32) FAKE_ITEMBOX_ACTOR(actor)->playerId))) {
             } else {
                 func_802A1064((struct FakeItemBox*) actor);
+                Audio_PlayNearbyBotItem(playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x12));
                 if (D_801631E0[playerId] == true) {
                     FAKE_ITEMBOX_ACTOR(actor)->pos[1] = spawn_actor_on_surface(FAKE_ITEMBOX_ACTOR(actor)->pos[0],
                                                                                FAKE_ITEMBOX_ACTOR(actor)->pos[1] + 30.0,
@@ -7580,7 +7805,7 @@ void cpu_use_item_strategy(s32 playerId) {
 
         case CPU_STRATEGY_END_THUNDERBOLT:
             if (cpuStrategy->timer >= 0xF1) {
-                func_800CAD40((s32) ((u8) playerId));
+                func_800CAD40(playerId);
                 cpuStrategy->branch = CPU_STRATEGY_WAIT_NEXT_ITEM;
                 cpuStrategy->timer = 0;
             }
@@ -7729,6 +7954,7 @@ void cpu_use_item_strategy(s32 playerId) {
                 if (parent->state == ORBIT_PLAYER && 0 < parent->shellsAvailable) {
                     cpuStrategy->branch = CPU_STRATEGY_ORBIT_TRIPLE_GREEN_SHELL;
                     parent->firePressed += 1.0f;
+                    Audio_PlayNearbyBotItem(playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
                     cpuStrategy->timeBeforeThrow = (random_int(2) * 20);
                 } else {
                     cpuStrategy->branch = CPU_STRATEGY_WAIT_NEXT_ITEM;
@@ -7779,6 +8005,7 @@ void cpu_use_item_strategy(s32 playerId) {
                 if (parent->state == ORBIT_PLAYER && 0 < parent->shellsAvailable) {
                     cpuStrategy->branch = CPU_STRATEGY_ORBIT_TRIPLE_RED_SHELL;
                     parent->firePressed += 1.0f;
+                    Audio_PlayNearbyBotItem(playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
                     cpuStrategy->timeBeforeThrow = (random_int(3) * 20) + 90; // Delay so that the CPU fires the next shell after the player has finished tumbling
                 } else {
                     cpuStrategy->branch = CPU_STRATEGY_WAIT_NEXT_ITEM;

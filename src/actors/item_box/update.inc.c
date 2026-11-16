@@ -1,9 +1,17 @@
 #include <racing/actors.h>
 #include <main.h>
 #include "port/LocalMultiplayer.h"
+#include "port/NativeFrameClock.h"
 
 static s32 item_box_respawn_updates(void) {
-    return gGamestate == RACING && MultiplayerOptions_SixteenEnabled() ? 2 : 1;
+    if (gGamestate != RACING) return 1;
+    const s32 racers = LocalMP_RacerCount();
+    // Scale recovery with the actual race grid, including extra CPU racers.
+    // Keep a bounded amount of work even for thousands of racers.
+    if (racers > 256) return 32;
+    if (racers > 64) return 16;
+    if (racers > 16) return 8;
+    return (racers > 8 || MultiplayerOptions_SixteenEnabled()) ? 4 : 1;
 }
 
 /**
@@ -35,9 +43,11 @@ static void update_item_box_hot_air_balloon_step(struct ItemBox* itemBox) {
 }
 
 void update_actor_item_box_hot_air_balloon(struct ItemBox* itemBox) {
-    const s32 updates = itemBox->state == 3 ? item_box_respawn_updates() : 1;
-    for (s32 step = 0; step < updates; ++step) {
-        update_item_box_hot_air_balloon_step(itemBox);
+    for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks; ++tick) {
+        const s32 updates = itemBox->state == 3 ? item_box_respawn_updates() : 1;
+        for (s32 step = 0; step < updates; ++step) {
+            update_item_box_hot_air_balloon_step(itemBox);
+        }
     }
 }
 
@@ -81,10 +91,12 @@ static void update_item_box_step(struct ItemBox* itemBox) {
 }
 
 void update_actor_item_box(struct ItemBox* itemBox) {
-    // Advance both the break-up timer and the rising/return animation twice
-    // during recovery. Keep the idle rotation at its normal speed.
-    const s32 updates = itemBox->state == 2 ? 1 : item_box_respawn_updates();
-    for (s32 step = 0; step < updates; ++step) {
-        update_item_box_step(itemBox);
+    // Advance the break-up timer and rising animation faster during recovery
+    // for larger grids. Keep the idle rotation at its normal speed.
+    for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks; ++tick) {
+        const s32 updates = itemBox->state == 2 ? 1 : item_box_respawn_updates();
+        for (s32 step = 0; step < updates; ++step) {
+            update_item_box_step(itemBox);
+        }
     }
 }

@@ -1,5 +1,5 @@
 diff --git a/include/fast/Fast3dGui.h b/include/fast/Fast3dGui.h
-index 80d0231..a6c6607 100644
+index 80d02317..a6c66077 100644
 --- a/include/fast/Fast3dGui.h
 +++ b/include/fast/Fast3dGui.h
 @@ -64,6 +64,8 @@ class Fast3dGui : public Ship::Gui {
@@ -19,8 +19,108 @@ index 80d0231..a6c6607 100644
      /** @brief Applies any pending resolution or MSAA changes to the render target. */
      void ApplyResolutionChanges();
  
+diff --git a/include/fast/Fast3dWindow.h b/include/fast/Fast3dWindow.h
+index 7c16ca1f..58da32fb 100644
+--- a/include/fast/Fast3dWindow.h
++++ b/include/fast/Fast3dWindow.h
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <optional>
+ #include "ship/window/Window.h"
+ #include "ship/window/gui/Gui.h"
+ #include "ship/controller/controldevice/controller/mapping/keyboard/KeyboardScancodes.h"
+@@ -25,6 +26,11 @@ enum WindowBackend {
+     FAST3D_SDL_METAL = 3,
+ };
+ 
++struct PresentationTiming {
++    double drawMs;
++    double finalizeAndPresentMs;
++};
++
+ class Fast3dWindow : public Ship::Window {
+   public:
+     Fast3dWindow();
+@@ -82,6 +88,7 @@ class Fast3dWindow : public Ship::Window {
+     void SetRendererUCode(UcodeHandlers ucode);
+     void EnableSRGBMode();
+     bool DrawAndRunGraphicsCommands(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements);
++    std::optional<PresentationTiming> GetLastPresentationTiming() const { return mLastPresentationTiming; }
+ 
+     std::weak_ptr<Interpreter> GetInterpreterWeak() const;
+ 
+@@ -101,5 +108,6 @@ class Fast3dWindow : public Ship::Window {
+     GfxWindowBackend* mWindowManagerApi;
+     std::shared_ptr<Interpreter> mInterpreter = nullptr;
+     std::shared_ptr<GfxDebugger> mGfxDebugger;
++    std::optional<PresentationTiming> mLastPresentationTiming;
+ };
+ } // namespace Fast
+diff --git a/include/fast/backends/gfx_direct3d_common.h b/include/fast/backends/gfx_direct3d_common.h
+index d5215c2a..4f4aae51 100644
+--- a/include/fast/backends/gfx_direct3d_common.h
++++ b/include/fast/backends/gfx_direct3d_common.h
+@@ -138,6 +138,8 @@ class GfxRenderingAPIDX11 final : public GfxRenderingAPI {
+ 
+     Microsoft::WRL::ComPtr<ID3D11RasterizerState> mRasterizerState;
+     Microsoft::WRL::ComPtr<ID3D11DepthStencilState> mDepthStencilState;
++    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> mDepthStencilStates[8];
++    bool mReuseDepthStates = false;
+     Microsoft::WRL::ComPtr<ID3D11Buffer> mVertexBuffer;
+     Microsoft::WRL::ComPtr<ID3D11Buffer> mPerFrameCb;
+     Microsoft::WRL::ComPtr<ID3D11Buffer> mPerDrawCb;
+diff --git a/include/fast/backends/gfx_dxgi.h b/include/fast/backends/gfx_dxgi.h
+index 2be987d7..657c3a28 100644
+--- a/include/fast/backends/gfx_dxgi.h
++++ b/include/fast/backends/gfx_dxgi.h
+@@ -62,6 +62,7 @@ class GfxWindowBackendDXGI final : public GfxWindowBackend {
+     void HandleRawInputBuffered();
+     void UpdateMousePrevPos();
+     void ApplyMouseCaptureClip();
++    bool IsClientCursorHidden() const { return !mClientCursorVisible; }
+ 
+     std::tuple<HMONITOR, RECT, BOOL> mMonitor; // 0: Handle, 1: Display Monitor Rect, 2: Is_Primary
+     uint32_t current_width, current_height;    // Width and height of client areas
+@@ -78,6 +79,7 @@ class GfxWindowBackendDXGI final : public GfxWindowBackend {
+     bool mHasMousePosition;
+ 
+   private:
++    bool mClientCursorVisible = true;
+     void LoadDxgi();
+     void ApplyMaxFrameLatency(bool first);
+     void ToggleBorderlessWindowFullScreen(bool enable, bool callCallback);
+diff --git a/include/fast/backends/gfx_screen_config.h b/include/fast/backends/gfx_screen_config.h
+index 30cac0e2..556aefc1 100644
+--- a/include/fast/backends/gfx_screen_config.h
++++ b/include/fast/backends/gfx_screen_config.h
+@@ -2,3 +2,6 @@
+ 
+ #define DESIRED_SCREEN_WIDTH 640
+ #define DESIRED_SCREEN_HEIGHT 480
++
++#define CVAR_DX11_REUSE_DEPTH_STATES "gGraphics.DX11ReuseDepthStates"
++#define CVAR_EXPANDED_TEXTURE_CACHE "gGraphics.ExpandedTextureCache"
+diff --git a/include/fast/interpreter.h b/include/fast/interpreter.h
+index 5d87f4ef..2ac829e0 100644
+--- a/include/fast/interpreter.h
++++ b/include/fast/interpreter.h
+@@ -502,6 +502,7 @@ class Interpreter {
+     RenderingState mRenderingState{};
+ 
+     GfxTextureCache mTextureCache{};
++    size_t mTextureCacheLimit = 1024;
+     std::map<ColorCombinerKey, ColorCombiner> mColorCombinerPool; // color_combiner_pool;
+     std::map<ColorCombinerKey, ColorCombiner>::iterator mPrevCombiner = mColorCombinerPool.end();
+     uint8_t* mTexUploadBuffer = nullptr;
+@@ -566,4 +567,4 @@ const char* GfxGetOpcodeName(int8_t opcode);
+ extern "C" void gfx_texture_cache_clear();
+ extern "C" void gfx_shader_cache_clear();
+ extern "C" int gfx_create_framebuffer(uint32_t width, uint32_t height, uint32_t native_width, uint32_t native_height,
+-                                      uint8_t resize, bool forceFixedAspect = false);
+\ No newline at end of file
++                                      uint8_t resize, bool forceFixedAspect = false);
 diff --git a/include/libultraship/libultra/os.h b/include/libultraship/libultra/os.h
-index bd11553..bd559a5 100644
+index bd11553a..bd559a5d 100644
 --- a/include/libultraship/libultra/os.h
 +++ b/include/libultraship/libultra/os.h
 @@ -11,7 +11,7 @@
@@ -33,7 +133,7 @@ index bd11553..bd559a5 100644
  #define MAXCONTROLLERS 6
  #endif
 diff --git a/include/libultraship/window/gui/InputEditorWindow.h b/include/libultraship/window/gui/InputEditorWindow.h
-index 9156fd0..cf22179 100644
+index 9156fd0d..cf221791 100644
 --- a/include/libultraship/window/gui/InputEditorWindow.h
 +++ b/include/libultraship/window/gui/InputEditorWindow.h
 @@ -7,6 +7,7 @@
@@ -65,8 +165,95 @@ index 9156fd0..cf22179 100644
      /**
       * @brief Draws a single stick-direction mapping line (e.g. "Stick Up").
       * @param axisDirectionName Human-readable axis/direction label.
+diff --git a/include/ship/controller/controldevice/controller/ControllerStick.h b/include/ship/controller/controldevice/controller/ControllerStick.h
+index 41f8a26c..05ebb060 100644
+--- a/include/ship/controller/controldevice/controller/ControllerStick.h
++++ b/include/ship/controller/controldevice/controller/ControllerStick.h
+@@ -2,6 +2,7 @@
+ 
+ #include "ship/controller/controldevice/controller/mapping/ControllerAxisDirectionMapping.h"
+ #include <cstdint>
++#include <array>
+ #include <memory>
+ #include <unordered_map>
+ #include "ship/controller/controldevice/controller/mapping/keyboard/KeyboardScancodes.h"
+@@ -200,6 +201,12 @@ class ControllerStick {
+     /** @brief Returns the stick index (left or right). */
+     StickIndex GetStickIndex();
+ 
++    static constexpr size_t CALIBRATION_SAMPLES = 32;
++    bool GetCalibrationInput(float& x, float& y);
++    bool SaveCalibration(float centerX, float centerY, const std::array<float, CALIBRATION_SAMPLES>& radii);
++    void ResetCalibration();
++    bool HasCalibration() const { return mCalibrated; }
++
+   private:
+     double GetClosestNotch(double angle, double approximationThreshold);
+     void LoadAxisDirectionMappingFromConfig(std::string id);
+@@ -215,6 +222,9 @@ class ControllerStick {
+     uint8_t mDeadzonePercentage;
+     float mDeadzone;
+     uint8_t mNotchSnapAngle;
++    bool mCalibrated = false;
++    float mCalibrationCenterX = 0, mCalibrationCenterY = 0;
++    std::array<float, CALIBRATION_SAMPLES> mCalibrationRadii{};
+ 
+     std::unordered_map<Direction, std::unordered_map<std::string, std::shared_ptr<ControllerAxisDirectionMapping>>>
+         mAxisDirectionMappings;
+diff --git a/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAnyMapping.h b/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAnyMapping.h
+index 83fda63f..a808e089 100644
+--- a/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAnyMapping.h
++++ b/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAnyMapping.h
+@@ -41,6 +41,13 @@ class SDLAxisDirectionToAnyMapping : virtual public ControllerInputMapping {
+      */
+     bool AxisIsStick();
+ 
++    // Read-only signed-half preview in the N64 stick's 0..85 units.
++    float GetPreviewDirectionValue(SDL_GameController* gamepad) const {
++        const int value = SDL_GameControllerGetAxis(gamepad, mControllerAxis);
++        const int directed = mAxisDirection == POSITIVE ? value : -value;
++        return directed > 0 ? directed * (85.0f / 32767.0f) : 0.0f;
++    }
++
+   protected:
+     SDL_GameControllerAxis mControllerAxis;
+     AxisDirection mAxisDirection;
+diff --git a/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h b/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h
+index 33c9aa3b..73cbd55a 100644
+--- a/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h
++++ b/include/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h
+@@ -25,6 +25,8 @@ class SDLAxisDirectionToAxisDirectionMapping final : public ControllerAxisDirect
+ 
+     /** @brief Returns the normalised axis value from the SDL axis input. */
+     float GetNormalizedAxisDirectionValue() override;
++    // UI calibration reads only: do not unblock gameplay while a modal is open.
++    float GetCalibrationAxisValue();
+ 
+     /** @brief Returns the unique string identifier for this mapping. */
+     std::string GetAxisDirectionMappingId() override;
+diff --git a/include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.h b/include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.h
+index ccf7becc..53a9e941 100644
+--- a/include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.h
++++ b/include/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.h
+@@ -29,8 +29,15 @@ class SDLButtonToAnyMapping : virtual public ControllerInputMapping {
+     /** @brief Returns the human-readable name of the SDL gamepad device. */
+     std::string GetPhysicalDeviceName() override;
+ 
++    // Keep raw joystick buttons outside SDL2's standardized enum namespace.
++    // The encoded integer is persisted by existing SDL button mappings.
++    static constexpr int32_t RAW_JOYSTICK_BUTTON_BASE = 0x10000;
++    static int32_t FindPressedUnmappedButton(SDL_GameController* gamepad);
++    // Read-only editor feedback, independent of gameplay input blocking.
++    bool IsButtonPressed(SDL_GameController* gamepad) const;
++
+   protected:
+-    SDL_GameControllerButton mControllerButton;
++    int32_t mControllerButton;
+ 
+   private:
+     std::string GetGenericButtonName();
 diff --git a/include/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h b/include/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h
-index 33f9a66..95a1bc9 100644
+index 33f9a664..95a1bc9f 100644
 --- a/include/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h
 +++ b/include/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.h
 @@ -1,9 +1,11 @@
@@ -135,7 +322,7 @@ index 33f9a66..95a1bc9 100644
  };
  } // namespace Ship
 diff --git a/include/ship/window/Window.h b/include/ship/window/Window.h
-index 66a2b26..ae7c706 100644
+index 66a2b26b..ae7c706a 100644
 --- a/include/ship/window/Window.h
 +++ b/include/ship/window/Window.h
 @@ -1,6 +1,7 @@
@@ -164,7 +351,7 @@ index 66a2b26..ae7c706 100644
      int32_t mLastScancode = -1;
      int32_t mWindowBackend;
 diff --git a/src/fast/Fast3dGui.cpp b/src/fast/Fast3dGui.cpp
-index 237a502..8b5779f 100644
+index 237a502a..8b5779ff 100644
 --- a/src/fast/Fast3dGui.cpp
 +++ b/src/fast/Fast3dGui.cpp
 @@ -1,4 +1,6 @@
@@ -248,10 +435,52 @@ index 237a502..8b5779f 100644
          if (!Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
                  CVAR_PREFIX_ADVANCED_RESOLUTION ".PixelPerfectMode", 0)) {
 diff --git a/src/fast/Fast3dWindow.cpp b/src/fast/Fast3dWindow.cpp
-index 2b77a5f..38e6e13 100644
+index 2b77a5f2..736ab4fe 100644
 --- a/src/fast/Fast3dWindow.cpp
 +++ b/src/fast/Fast3dWindow.cpp
-@@ -384,6 +384,8 @@ bool Fast3dWindow::MouseButtonDown(int button) {
+@@ -15,6 +15,7 @@
+ 
+ #include "fast/Fast3dGui.h"
+ 
++#include <chrono>
+ #include <fstream>
+ 
+ namespace Fast {
+@@ -194,13 +195,19 @@ bool Fast3dWindow::IsFrameReady() {
+ }
+ 
+ bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtxReplacements) {
+-    std::shared_ptr<Window> wnd = Ship::Context::GetRawInstance()->GetWindow();
++    const auto context = Ship::Context::GetRawInstance();
++    std::shared_ptr<Window> wnd = context->GetWindow();
++    mLastPresentationTiming.reset();
+ 
+     // Skip dropped frames
+     if (!wnd->IsFrameReady()) {
+         return false;
+     }
+ 
++    using Clock = std::chrono::steady_clock;
++    using Milliseconds = std::chrono::duration<double, std::milli>;
++    const bool recordTiming = context->GetConsoleVariables()->GetInteger("gDiagnostics.DetailedCrashLogging", 0);
++    const auto drawStart = recordTiming ? Clock::now() : Clock::time_point{};
+     auto gui = wnd->GetGui();
+     // Setup mouse state manager
+     wnd->GetMouseStateManager()->StartFrame();
+@@ -213,7 +220,12 @@ bool Fast3dWindow::DrawAndRunGraphicsCommands(Gfx* commands, const std::unordere
+     // Renders the game frame buffer to the final window and finishes the GUI
+     gui->EndDraw();
+     // Finalize swap buffers
++    const auto presentStart = recordTiming ? Clock::now() : Clock::time_point{};
+     mInterpreter->EndFrame();
++    if (recordTiming) {
++        mLastPresentationTiming = PresentationTiming{ Milliseconds(presentStart - drawStart).count(),
++                                                       Milliseconds(Clock::now() - presentStart).count() };
++    }
+ 
+     return true;
+ }
+@@ -384,6 +396,8 @@ bool Fast3dWindow::MouseButtonDown(int button) {
  
  void Fast3dWindow::OnFullscreenChanged(bool isNowFullscreen) {
      std::shared_ptr<Window> wnd = Ship::Context::GetRawInstance()->GetWindow();
@@ -261,10 +490,137 @@ index 2b77a5f..38e6e13 100644
      // Re-save fullscreen enabled after
      Ship::Context::GetRawInstance()->GetConfig()->SetBool("Window.Fullscreen.Enabled", isNowFullscreen);
 diff --git a/src/fast/backends/gfx_direct3d11.cpp b/src/fast/backends/gfx_direct3d11.cpp
-index bf29f83..41ded03 100644
+index bf29f831..63486edf 100644
 --- a/src/fast/backends/gfx_direct3d11.cpp
 +++ b/src/fast/backends/gfx_direct3d11.cpp
-@@ -872,6 +872,24 @@ void GfxRenderingAPIDX11::UpdateFramebufferParameters(int fb_id, uint32_t width,
+@@ -2,6 +2,7 @@
+ 
+ #include <cstdio>
+ #include <vector>
++#include <atomic>
+ #include <cmath>
+ 
+ #include <map>
+@@ -48,6 +49,21 @@
+ 
+ using namespace Microsoft::WRL; // For ComPtr
+ 
++namespace {
++struct GpuTimingSlot {
++    ComPtr<ID3D11Query> disjoint, start, end;
++    bool pending = false;
++};
++GpuTimingSlot gpuTiming[8];
++unsigned gpuTimingIndex = 0;
++int gpuActiveSlot = -1;
++std::atomic<unsigned long long> gpuMicroseconds{0}, gpuSamples{0};
++}
++extern "C" void PerformanceGpuSnapshot(unsigned long long* microseconds, unsigned long long* samples) {
++    *microseconds = gpuMicroseconds.load(std::memory_order_relaxed);
++    *samples = gpuSamples.load(std::memory_order_relaxed);
++}
++
+ namespace Fast {
+ 
+ GfxRenderingAPIDX11::~GfxRenderingAPIDX11() {
+@@ -673,21 +689,26 @@ void GfxRenderingAPIDX11::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, siz
+         mLastDepthTest = mCurrentDepthTest;
+         mLastDepthMask = mCurrentDepthMask;
+ 
+-        mDepthStencilState.Reset();
++        const unsigned stateIndex = (mCurrentDepthTest ? 1u : 0u) | (mCurrentDepthMask ? 2u : 0u) |
++                                    (mCurrentZmodeDecal ? 4u : 0u);
++        auto& depthState = mReuseDepthStates ? mDepthStencilStates[stateIndex] : mDepthStencilState;
++        if (!mReuseDepthStates) {
++            depthState.Reset();
++        }
+ 
+-        D3D11_DEPTH_STENCIL_DESC depth_stencil_desc;
+-        ZeroMemory(&depth_stencil_desc, sizeof(D3D11_DEPTH_STENCIL_DESC));
++        if (!depthState) {
++            D3D11_DEPTH_STENCIL_DESC depth_stencil_desc = {};
+ 
+-        depth_stencil_desc.DepthEnable = mCurrentDepthTest || mCurrentDepthMask;
+-        depth_stencil_desc.DepthWriteMask =
+-            mCurrentDepthMask ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
+-        depth_stencil_desc.DepthFunc = mCurrentDepthTest
+-                                           ? (mCurrentZmodeDecal ? D3D11_COMPARISON_LESS_EQUAL : D3D11_COMPARISON_LESS)
+-                                           : D3D11_COMPARISON_ALWAYS;
+-        depth_stencil_desc.StencilEnable = false;
++            depth_stencil_desc.DepthEnable = mCurrentDepthTest || mCurrentDepthMask;
++            depth_stencil_desc.DepthWriteMask =
++                mCurrentDepthMask ? D3D11_DEPTH_WRITE_MASK_ALL : D3D11_DEPTH_WRITE_MASK_ZERO;
++            depth_stencil_desc.DepthFunc = mCurrentDepthTest
++                                               ? (mCurrentZmodeDecal ? D3D11_COMPARISON_LESS_EQUAL : D3D11_COMPARISON_LESS)
++                                               : D3D11_COMPARISON_ALWAYS;
+ 
+-        ThrowIfFailed(mDevice->CreateDepthStencilState(&depth_stencil_desc, mDepthStencilState.GetAddressOf()));
+-        mContext->OMSetDepthStencilState(mDepthStencilState.Get(), 0);
++            ThrowIfFailed(mDevice->CreateDepthStencilState(&depth_stencil_desc, depthState.GetAddressOf()));
++        }
++        mContext->OMSetDepthStencilState(depthState.Get(), 0);
+     }
+ 
+     if (mLastZmodeDecal != mCurrentZmodeDecal) {
+@@ -820,6 +841,43 @@ void GfxRenderingAPIDX11::OnResize() {
+ }
+ 
+ void GfxRenderingAPIDX11::StartFrame() {
++    gpuActiveSlot = -1;
++    auto vars = Ship::Context::GetRawInstance()->GetConsoleVariables();
++    if (vars->GetInteger("gDiagnostics.PerformanceCapture", 0)) {
++        auto& slot = gpuTiming[gpuTimingIndex];
++        if (slot.pending) {
++            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT timing{};
++            UINT64 start = 0, end = 0;
++            if (mContext->GetData(slot.disjoint.Get(), &timing, sizeof(timing), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
++                mContext->GetData(slot.start.Get(), &start, sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
++                mContext->GetData(slot.end.Get(), &end, sizeof(end), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK) {
++                if (!timing.Disjoint && timing.Frequency && end >= start) {
++                    gpuMicroseconds.fetch_add(static_cast<unsigned long long>((end - start) * 1000000.0 / timing.Frequency), std::memory_order_relaxed);
++                    gpuSamples.fetch_add(1, std::memory_order_relaxed);
++                }
++                slot.pending = false;
++            }
++        }
++        if (!slot.pending) {
++            if (!slot.disjoint) {
++                D3D11_QUERY_DESC desc{};
++                desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
++                HRESULT ok = mDevice->CreateQuery(&desc, slot.disjoint.GetAddressOf());
++                desc.Query = D3D11_QUERY_TIMESTAMP;
++                if (SUCCEEDED(ok)) ok = mDevice->CreateQuery(&desc, slot.start.GetAddressOf());
++                if (SUCCEEDED(ok)) ok = mDevice->CreateQuery(&desc, slot.end.GetAddressOf());
++                if (FAILED(ok)) { slot.disjoint.Reset(); slot.start.Reset(); slot.end.Reset(); }
++            }
++            if (slot.disjoint && slot.start && slot.end) {
++                mContext->Begin(slot.disjoint.Get());
++                mContext->End(slot.start.Get());
++                gpuActiveSlot = static_cast<int>(gpuTimingIndex);
++            }
++        }
++        gpuTimingIndex = (gpuTimingIndex + 1) % 8;
++    }
++    mReuseDepthStates = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_DX11_REUSE_DEPTH_STATES, 0);
++
+     // Set per-frame constant buffer
+     ID3D11Buffer* buffers[3] = { mPerFrameCb.Get(), mPerDrawCb.Get(), mPerPrimDepthCb.Get() };
+     mContext->PSSetConstantBuffers(0, 3, buffers);
+@@ -832,6 +890,13 @@ void GfxRenderingAPIDX11::StartFrame() {
+ }
+ 
+ void GfxRenderingAPIDX11::EndFrame() {
++    if (gpuActiveSlot >= 0) {
++        auto& slot = gpuTiming[gpuActiveSlot];
++        mContext->End(slot.end.Get());
++        mContext->End(slot.disjoint.Get());
++        slot.pending = true;
++        gpuActiveSlot = -1;
++    }
+     mContext->Flush();
+ }
+ 
+@@ -872,6 +937,24 @@ void GfxRenderingAPIDX11::UpdateFramebufferParameters(int fb_id, uint32_t width,
  
      bool diff = tex.width != width || tex.height != height || fb.msaa_level != msaa_level;
  
@@ -290,7 +646,7 @@ index bf29f83..41ded03 100644
          if (fb_id != 0) {
              D3D11_TEXTURE2D_DESC texture_desc;
 diff --git a/src/fast/backends/gfx_dxgi.cpp b/src/fast/backends/gfx_dxgi.cpp
-index 09c04da..bb24d7c 100644
+index 09c04da3..d8d8965b 100644
 --- a/src/fast/backends/gfx_dxgi.cpp
 +++ b/src/fast/backends/gfx_dxgi.cpp
 @@ -145,6 +145,8 @@ static bool GetMonitorAtCoords(std::vector<std::tuple<HMONITOR, RECT, BOOL>> Mon
@@ -325,7 +681,20 @@ index 09c04da..bb24d7c 100644
  
          // Set borderless full screen to that monitor
          SetWindowLongPtr(h_wnd, GWL_STYLE, WS_VISIBLE | WS_POPUP);
-@@ -588,6 +600,31 @@ void GfxWindowBackendDXGI::Init(const char* game_name, const char* gfx_api_name,
+@@ -481,6 +493,12 @@ static LRESULT CALLBACK gfx_dxgi_wnd_proc(HWND h_wnd, UINT message, WPARAM w_par
+             self->HandleRawInputBuffered();
+             break;
+         }
++        case WM_SETCURSOR:
++            if (self && LOWORD(l_param) == HTCLIENT && self->IsClientCursorHidden()) {
++                SetCursor(nullptr);
++                return TRUE;
++            }
++            return DefWindowProcW(h_wnd, message, w_param, l_param);
+         case WM_MOUSEMOVE:
+             if (!self->mIsMouseHovered) {
+                 self->mIsMouseHovered = true;
+@@ -588,6 +606,31 @@ void GfxWindowBackendDXGI::Init(const char* game_name, const char* gfx_api_name,
  
      ATOM winclass = RegisterClassExW(&wcex);
  
@@ -357,7 +726,7 @@ index 09c04da..bb24d7c 100644
      RECT wr = { 0, 0, width, height };
      AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
      current_width = wr.right - wr.left;
-@@ -626,7 +663,7 @@ void GfxWindowBackendDXGI::Init(const char* game_name, const char* gfx_api_name,
+@@ -626,32 +669,21 @@ void GfxWindowBackendDXGI::Init(const char* game_name, const char* gfx_api_name,
  }
  
  void GfxWindowBackendDXGI::SetFullscreenChangedCallback(void (*mOnFullscreenChanged)(bool is_now_fullscreen)) {
@@ -366,10 +735,53 @@ index 09c04da..bb24d7c 100644
  }
  
  void GfxWindowBackendDXGI::SetCursorVisibility(bool visible) {
-@@ -789,6 +826,15 @@ static uint64_t qpc_to_100ns(uint64_t qpc) {
+-    // https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showcursor
+-    // https://devblogs.microsoft.com/oldnewthing/20091217-00/?p=15643
+-    // ShowCursor uses a counter, not a boolean value, and increments or decrements that value when called
+-    // This means we need to keep calling it until we get the value we want
+-
+-    //
+-    //  NOTE:  If you continue calling until you "get the value you want" and there is no mouse attached,
+-    //  it will lock the software up.  Windows always returns -1 if there is no mouse!
+-    //
+-
+-    const int _MAX_TRIES = 15; // Prevent spinning infinitely if no mouse is plugged in
+-
+-    int cursorVisibilityTries = 0;
+-    int cursorVisibilityCounter;
+-    if (visible) {
+-        do {
+-            cursorVisibilityCounter = ShowCursor(true);
+-        } while (cursorVisibilityCounter < 0 && ++cursorVisibilityTries < _MAX_TRIES);
+-    } else {
+-        do {
+-            cursorVisibilityCounter = ShowCursor(false);
+-        } while (cursorVisibilityCounter >= 0);
++    if (mClientCursorVisible == visible) {
++        return;
++    }
++    mClientCursorVisible = visible;
++
++    // Apply menu and capture changes even if the pointer is stationary.
++    POINT cursor;
++    RECT client;
++    if (GetCursorPos(&cursor) && WindowFromPoint(cursor) == h_wnd &&
++        ScreenToClient(h_wnd, &cursor) && GetClientRect(h_wnd, &client) && PtInRect(&client, cursor)) {
++        SetCursor(visible ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
+     }
+ }
+ 
+@@ -789,6 +821,22 @@ static uint64_t qpc_to_100ns(uint64_t qpc) {
  }
  
  bool GfxWindowBackendDXGI::IsFrameReady() {
++    if (mTargetFps == 0) {
++        // Zero means no software FPS limit. VSync remains a separate choice.
++        mFrameStats.clear();
++        mPendingFrameStats.clear();
++        mDroppedFrame = false;
++        return true;
++    }
 +    if (Ship::Context::GetRawInstance()->GetWindow()->IsFastForward()) {
 +        LARGE_INTEGER now;
 +        QueryPerformanceCounter(&now);
@@ -382,7 +794,7 @@ index 09c04da..bb24d7c 100644
      DXGI_FRAME_STATISTICS stats;
      if (swap_chain->GetFrameStatistics(&stats) == S_OK &&
          (stats.SyncRefreshCount != 0 || stats.SyncQPCTime.QuadPart != 0ULL)) {
-@@ -915,6 +961,12 @@ bool GfxWindowBackendDXGI::IsFrameReady() {
+@@ -915,11 +963,31 @@ bool GfxWindowBackendDXGI::IsFrameReady() {
  }
  
  void GfxWindowBackendDXGI::SwapBuffersBegin() {
@@ -392,10 +804,29 @@ index 09c04da..bb24d7c 100644
 +        mDroppedFrame = false;
 +        return;
 +    }
++    if (mAppliedMaxFrameLatency != mMaxFrameLatency) {
++        ApplyMaxFrameLatency(false);
++    }
      // mLengthInVsyncFrames (now mVsyncEnabled) was used as present interval. Present interval >1 (aka fractional
      // V-Sync) breaks VRR and introduces even more input lag than capping via normal V-Sync does. Get the present
      // interval the user wants instead (V-Sync toggle).
-@@ -956,6 +1008,7 @@ void GfxWindowBackendDXGI::SwapBuffersBegin() {
+     mVsyncEnabled = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_VSYNC_ENABLED, 1) ? 1 : 0;
+ 
++    if (mTargetFps == 0) {
++        QueryPerformanceCounter(&mPreviousPresentTime);
++        if (mTearingSupport && !mVsyncEnabled) {
++            ThrowIfFailed(swap_chain->Present(0, DXGI_PRESENT_ALLOW_TEARING));
++        } else {
++            ThrowIfFailed(swap_chain->Present(mVsyncEnabled, 0));
++        }
++        mDroppedFrame = false;
++        return;
++    }
++
+     LARGE_INTEGER t;
+     QueryPerformanceCounter(&t);
+     int64_t next = qpc_to_100ns(mPreviousPresentTime.QuadPart) +
+@@ -956,30 +1024,11 @@ void GfxWindowBackendDXGI::SwapBuffersBegin() {
  }
  
  void GfxWindowBackendDXGI::SwapBuffersEnd() {
@@ -403,8 +834,51 @@ index 09c04da..bb24d7c 100644
      LARGE_INTEGER t0, t1, t2;
      QueryPerformanceCounter(&t0);
      QueryPerformanceCounter(&t1);
+ 
+-    if (mAppliedMaxFrameLatency > mMaxFrameLatency) {
+-        // If latency is decreased, you have to wait the same amout of times as the old latency was set to
+-        int times_to_wait = mAppliedMaxFrameLatency;
+-        int latency = mMaxFrameLatency;
+-        mMaxFrameLatency = 1;
+-        ApplyMaxFrameLatency(false);
+-        if (mWaitableObject != nullptr) {
+-            while (times_to_wait > 0) {
+-                WaitForSingleObject(mWaitableObject, INFINITE);
+-                times_to_wait--;
+-            }
+-        }
+-        mMaxFrameLatency = latency;
+-        ApplyMaxFrameLatency(false);
+-
+-        return; // Make sure we don't wait a second time on the waitable object, since that would hang the program
+-    } else if (mAppliedMaxFrameLatency != mMaxFrameLatency) {
+-        ApplyMaxFrameLatency(false);
+-    }
+-
+     if (!mDroppedFrame) {
+         if (mWaitableObject != nullptr) {
+             WaitForSingleObject(mWaitableObject, INFINITE);
+@@ -1011,6 +1060,18 @@ int GfxWindowBackendDXGI::GetTargetFps() {
+ }
+ 
+ void GfxWindowBackendDXGI::SetTargetFps(int fps) {
++    if (fps <= 0) {
++        mTargetFps = 0;
++        return;
++    }
++    if (mTargetFps == 0) {
++        LARGE_INTEGER now;
++        QueryPerformanceCounter(&now);
++        mTargetFps = static_cast<uint32_t>(fps);
++        mFrameTimeStamp = qpc_to_ns(now.QuadPart - qpc_init) * mTargetFps;
++        mPreviousPresentTime = now;
++        return;
++    }
+     uint32_t old_fps = mTargetFps;
+     uint64_t t0 = mFrameTimeStamp / old_fps;
+     uint32_t t1 = mFrameTimeStamp % old_fps;
 diff --git a/src/fast/backends/gfx_sdl2.cpp b/src/fast/backends/gfx_sdl2.cpp
-index 15c5415..71e47be 100644
+index 15c5415f..f992ca94 100644
 --- a/src/fast/backends/gfx_sdl2.cpp
 +++ b/src/fast/backends/gfx_sdl2.cpp
 @@ -739,6 +739,8 @@ void GfxWindowBackendSDL2::SyncFramerateWithTime() const {
@@ -421,26 +895,339 @@ index 15c5415..71e47be 100644
      }
  
 -    SyncFramerateWithTime();
-+    if (!fastForward) SyncFramerateWithTime();
++    if (!fastForward && mTargetFps != 0) SyncFramerateWithTime();
      SDL_GL_SwapWindow(mWnd);
  }
  
+@@ -762,7 +764,8 @@ int GfxWindowBackendSDL2::GetTargetFps() {
+ }
+ 
+ void GfxWindowBackendSDL2::SetTargetFps(int fps) {
+-    mTargetFps = fps;
++    if (fps > 0 && mTargetFps == 0) previous_time = qpc_to_100ns(SDL_GetPerformanceCounter());
++    mTargetFps = fps > 0 ? static_cast<uint32_t>(fps) : 0;
+ }
+ 
+ void GfxWindowBackendSDL2::SetMaxFrameLatency(int latency) {
 diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
-index 04dff04..8032c1a 100644
+index 04dff040..7e2234ce 100644
 --- a/src/fast/interpreter.cpp
 +++ b/src/fast/interpreter.cpp
-@@ -5466,4 +5466,4 @@ extern "C" void gfx_register_fb_texture(const void* cpuAddr, int fbId) {
+@@ -34,6 +34,7 @@
+ #include "ship/utils/Utils.h"
+ #include "ship/Context.h"
+ #include "ship/config/ConsoleVariable.h"
++#include "fast/backends/gfx_screen_config.h"
+ 
+ #include "libultraship/libultra/os.h"
+ 
+@@ -66,7 +67,6 @@ std::stack<std::string> currentDir;
+ #define RATIO_Y(activeFb, dims) \
+     ((mFbActive ? activeFb->second.applied_height : dims.height) / (2.0f * HALF_SCREEN_HEIGHT(activeFb)))
+ 
+-#define TEXTURE_CACHE_MAX_SIZE 1024
+ 
+ namespace Fast {
+ 
+@@ -449,7 +449,7 @@ void Interpreter::TextureCacheClear() {
+     mTextureCache.lru.clear();
+     // Pre-allocate buckets so the map never rehashes during normal operation.
+     // Rehashing invalidates all iterators, including those stored in LRU entries.
+-    mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
++    mTextureCache.map.reserve(mTextureCacheLimit);
+     // Null rendering-state pointers — they pointed into map nodes that are now freed.
+     std::fill(std::begin(mRenderingState.mTextures), std::end(mRenderingState.mTextures), nullptr);
+ }
+@@ -470,7 +470,7 @@ bool Interpreter::TextureCacheLookup(int i, const TextureCacheKey& key) {
+         return true;
+     }
+ 
+-    if (mTextureCache.map.size() >= TEXTURE_CACHE_MAX_SIZE) {
++    if (mTextureCache.map.size() >= mTextureCacheLimit) {
+         // Remove the texture that was least recently used
+         it = mTextureCache.lru.front().it;
+         mTextureCache.free_texture_ids.push_back(it->second.texture_id);
+@@ -1027,6 +1027,28 @@ void Interpreter::ImportTextureCi4(int tile, bool importReplacement) {
+     mRapi->UploadTexture(mTexUploadBuffer, width, height);
+ }
+ 
++// Raw display-list data is not resource-owned; check its backing memory before reads.
++static bool TextureMemoryReadable(const void* address, size_t bytes) {
++#ifdef _WIN32
++    uintptr_t cursor = reinterpret_cast<uintptr_t>(address);
++    if (!cursor || bytes > UINTPTR_MAX - cursor) return false;
++    const uintptr_t end = cursor + bytes;
++    while (cursor < end) {
++        MEMORY_BASIC_INFORMATION region = {};
++        if (!VirtualQuery(reinterpret_cast<const void*>(cursor), &region, sizeof(region)) ||
++            region.State != MEM_COMMIT || (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
++            !(region.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
++                                PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return false;
++        const uintptr_t next = reinterpret_cast<uintptr_t>(region.BaseAddress) + region.RegionSize;
++        if (next <= cursor) return false;
++        cursor = next;
++    }
++    return true;
++#else
++    return address != nullptr;
++#endif
++}
++
+ void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
+     const RawTexMetadata* metadata = &mRdp->loaded_texture[mRdp->texture_tile[tile].tmem_index].raw_tex_metadata;
+     const uint8_t* addr =
+@@ -1050,6 +1072,16 @@ void Interpreter::ImportTextureCi8(int tile, bool importReplacement) {
+         return;
+     }
+ 
++    if (lineSizeBytes == 0 || fullImageLineSizeBytes < lineSizeBytes) return;
++    const uint64_t rows = (uint64_t(sizeBytes) + lineSizeBytes - 1) / lineSizeBytes;
++    const uint64_t sourceSpan = rows ? (rows - 1) * fullImageLineSizeBytes + lineSizeBytes : 0;
++    if (sourceSpan > SIZE_MAX || !TextureMemoryReadable(addr, static_cast<size_t>(sourceSpan)) ||
++        !TextureMemoryReadable(mRdp->palettes[0], 256) || !TextureMemoryReadable(mRdp->palettes[1], 256)) {
++        SPDLOG_ERROR("CI8 rejected unreadable texture/palette: source={} bytes={}",
++                     static_cast<const void*>(addr), sourceSpan);
++        return;
++    }
++
+     for (uint32_t i = 0, j = 0; i < sizeBytes; j += fullImageLineSizeBytes - lineSizeBytes) {
+         for (uint32_t k = 0; k < lineSizeBytes; i++, k++, j++) {
+             uint8_t idx = addr[j];
+@@ -3937,7 +3969,33 @@ bool gfx_othermode_h_handler_f3d(F3DGfx** cmd0) {
+ bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
+     Interpreter* gfx = mInstance.lock().get();
+     F3DGfx* cmd = *cmd0;
+-    uintptr_t i = (uintptr_t)gfx->SegAddr(cmd->words.w1);
++    // Validate both encoded segments and raw host addresses before any read.
++    // Substitute a bounded blank tile instead of leaving the previous texture
++    // active: later load-block commands may request a different buffer size.
++    const uintptr_t imageAddress = cmd->words.w1;
++    const bool invalidSegment = (imageAddress & 1) && (imageAddress >> 24) >= 16;
++    uintptr_t i = invalidSegment ? 0 : (uintptr_t)gfx->SegAddr(imageAddress);
++#ifdef _WIN32
++    const bool invalidHostAddress = i < 0x10000 || i > 0x00007FFFFFFFFFFFULL ||
++                                    !TextureMemoryReadable(reinterpret_cast<const void*>(i), 7);
++#else
++    const bool invalidHostAddress = i == 0;
++#endif
++    if (invalidSegment || invalidHostAddress) {
++        static uintptr_t lastInvalidImage = 0;
++        if (lastInvalidImage != imageAddress) {
++            SPDLOG_ERROR("Rejected invalid texture address {:#x} at command {}; using blank tile",
++                         imageAddress, static_cast<void*>(cmd));
++            lastInvalidImage = imageAddress;
++        }
++        static const uint8_t blankTexture[65536] = {};
++        RawTexMetadata blankMetadata = {};
++        blankMetadata.h_byte_scale = 1;
++        blankMetadata.v_pixel_scale = 1;
++        gfx->GfxDpSetTextureImage(C0(21, 3), C0(19, 2), C0(0, 12) + 1,
++                                 (const char*)blankTexture, 0, blankMetadata, (void*)blankTexture);
++        return false;
++    }
+ 
+     char* imgData = (char*)i;
+     uint32_t texFlags = 0;
+@@ -4954,7 +5012,7 @@ void Interpreter::Init(class GfxWindowBackend* wapi, class GfxRenderingAPI* rapi
+     ucode_handler_index = UcodeHandlers::ucode_f3dex2;
+ 
+     // Pre-allocate texture cache buckets to prevent rehash-induced iterator invalidation.
+-    mTextureCache.map.reserve(TEXTURE_CACHE_MAX_SIZE);
++    mTextureCache.map.reserve(mTextureCacheLimit);
+ }
+ 
+ void Interpreter::Destroy() {
+@@ -5096,6 +5154,12 @@ void Interpreter::RunGuiOnly() {
+ }
+ 
+ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements) {
++    const size_t cacheLimit = Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(
++                                  CVAR_EXPANDED_TEXTURE_CACHE, 0) ? 8192 : 1024;
++    if (cacheLimit != mTextureCacheLimit) {
++        mTextureCacheLimit = cacheLimit;
++        TextureCacheClear();
++    }
+     SpReset();
+ 
+     mGetPixelDepthPending.clear();
+@@ -5466,4 +5530,4 @@ extern "C" void gfx_register_fb_texture(const void* cpuAddr, int fbId) {
  
  extern "C" void gfx_unregister_fb_texture(const void* cpuAddr) {
      Fast::mInstance.lock().get()->UnregisterFbTexture(cpuAddr);
 -}
 \ No newline at end of file
 +}
+diff --git a/src/libultraship/controller/controldeck/ControlDeck.cpp b/src/libultraship/controller/controldeck/ControlDeck.cpp
+index c7c96f63..b3c191ac 100644
+--- a/src/libultraship/controller/controldeck/ControlDeck.cpp
++++ b/src/libultraship/controller/controldeck/ControlDeck.cpp
+@@ -1,6 +1,10 @@
+ #include "libultraship/controller/controldeck/ControlDeck.h"
+ 
+ #include "ship/Context.h"
++#include "ship/config/ConsoleVariable.h"
++#include <array>
++#include <cstring>
++#include <string>
+ #include "libultraship/controller/controldevice/controller/Controller.h"
+ #include "libultraship/controller/controldevice/controller/mapping/ControllerDefaultMappings.h"
+ #include "ship/utils/StringHelper.h"
+@@ -67,6 +71,17 @@ void ControlDeck::WriteToOSContPad(OSContPad* pad) {
+         const std::shared_ptr<Ship::Controller> controller = mPorts[i]->GetConnectedController();
+ 
+         if (controller != nullptr) {
++            // PC menu > Bindings: a port whose square is switched off sends neutral input to the game.
++            static std::array<std::string, MAXCONTROLLERS> disabledCVar;
++            if (disabledCVar[i].empty()) {
++                disabledCVar[i] = "gControllerPorts.Disabled.Port" + std::to_string(i + 1);
++            }
++            if (Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(disabledCVar[i].c_str(), 0) != 0) {
++                const uint8_t error = pad[i].err_no;
++                std::memset(&pad[i], 0, sizeof(OSContPad));
++                pad[i].err_no = error;
++                continue;
++            }
+             controller->ReadToPad(&pad[i]);
+         }
+     }
 diff --git a/src/libultraship/window/gui/InputEditorWindow.cpp b/src/libultraship/window/gui/InputEditorWindow.cpp
-index 54948e1..90d7587 100644
+index 54948e1e..2c1dc8ca 100644
 --- a/src/libultraship/window/gui/InputEditorWindow.cpp
 +++ b/src/libultraship/window/gui/InputEditorWindow.cpp
-@@ -1207,6 +1207,7 @@ void InputEditorWindow::DrawDeviceToggles(uint8_t portIndex) {
+@@ -6,6 +6,12 @@
+ #include "ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToButtonMapping.h"
+ #include "ship/controller/controldeck/ControlDeck.h"
+ #include "libultraship/libultra/controller.h"
++#include <array>
++#include <cmath>
++#include "ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.h"
++#include <unordered_map>
++#include "ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.h"
++#include "ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.h"
+ 
+ #define SCALE_IMGUI_SIZE(value) ((value / 13.0f) * ImGui::GetFontSize())
+ 
+@@ -429,6 +435,20 @@ void InputEditorWindow::DrawButtonLine(const char* buttonName, uint8_t port, CON
+                                        ImVec4 color = CHIP_COLOR_N64_GREY) {
+     ImGui::NewLine();
+     ImGui::SameLine(SCALE_IMGUI_SIZE(32.0f));
++    auto deck = Ship::Context::GetRawInstance()->GetControlDeck();
++    bool pressed = false;
++    for (const auto& id : mBitmaskToMappingIds[port][bitmask]) {
++        auto mapping = std::dynamic_pointer_cast<Ship::SDLButtonToAnyMapping>(
++            deck->GetControllerByPort(port)->GetButtonByBitmask(bitmask)->GetButtonMappingById(id));
++        auto axisMapping = std::dynamic_pointer_cast<Ship::SDLAxisDirectionToAnyMapping>(
++            deck->GetControllerByPort(port)->GetButtonByBitmask(bitmask)->GetButtonMappingById(id));
++        for (const auto& [instance, pad] : deck->GetConnectedPhysicalDeviceManager()->GetConnectedSDLGamepadsForPort(port)) {
++            if (mapping && mapping->IsButtonPressed(pad)) pressed = true;
++            if (axisMapping && axisMapping->AxisIsStick() && axisMapping->GetPreviewDirectionValue(pad) > 50.f)
++                pressed = true;
++        }
++    }
++    if (pressed) color = ImVec4(.15f, .85f, .35f, 1.f);
+     DrawInputChip(buttonName, color);
+     ImGui::SameLine(SCALE_IMGUI_SIZE(86.0f));
+     for (auto id : mBitmaskToMappingIds[port][bitmask]) {
+@@ -625,11 +645,94 @@ void InputEditorWindow::DrawStickSection(uint8_t port, uint8_t stick, int32_t id
+ 
+     ImGui::SameLine();
+     ImGui::BeginGroup();
+-    DrawStickDirectionLine(ICON_FA_ARROW_UP, port, stick, Ship::UP, color);
+-    DrawStickDirectionLine(ICON_FA_ARROW_DOWN, port, stick, Ship::DOWN, color);
+-    DrawStickDirectionLine(ICON_FA_ARROW_LEFT, port, stick, Ship::LEFT, color);
+-    DrawStickDirectionLine(ICON_FA_ARROW_RIGHT, port, stick, Ship::RIGHT, color);
++    DrawStickDirectionLine(ICON_FA_ARROW_UP, port, stick, Ship::UP, sY > 50 ? ImVec4(.15f, .85f, .35f, 1.f) : color);
++    DrawStickDirectionLine(ICON_FA_ARROW_DOWN, port, stick, Ship::DOWN, sY < -50 ? ImVec4(.15f, .85f, .35f, 1.f) : color);
++    DrawStickDirectionLine(ICON_FA_ARROW_LEFT, port, stick, Ship::LEFT, sX < -50 ? ImVec4(.15f, .85f, .35f, 1.f) : color);
++    DrawStickDirectionLine(ICON_FA_ARROW_RIGHT, port, stick, Ship::RIGHT, sX > 50 ? ImVec4(.15f, .85f, .35f, 1.f) : color);
+     ImGui::EndGroup();
++
++    struct CalibrationDraft {
++        bool measuring = false;
++        float centerX = 0, centerY = 0;
++        std::array<float, Ship::ControllerStick::CALIBRATION_SAMPLES> radii{};
++    };
++    static std::unordered_map<int, CalibrationDraft> calibrationDrafts;
++    auto& draft = calibrationDrafts[port * 2 + stick];
++    const auto popup = StringHelper::Sprintf("Calibrate stick###stickCalibration%d_%d", port, stick);
++    if (ImGui::Button(StringHelper::Sprintf("Calibrate...##%d_%d", port, stick).c_str())) {
++        draft = {};
++        ImGui::OpenPopup(popup.c_str());
++    }
++    if (controllerStick->HasCalibration()) {
++        ImGui::SameLine();
++        if (ImGui::Button(StringHelper::Sprintf("Reset calibration##%d_%d", port, stick).c_str()))
++            controllerStick->ResetCalibration();
++    }
++    const float popupWidth = std::min(ImGui::GetFontSize() * 30.f, ImGui::GetMainViewport()->WorkSize.x * .9f);
++    ImGui::SetNextWindowSize(ImVec2(popupWidth, 0), ImGuiCond_Always);
++    if (ImGui::BeginPopupModal(popup.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
++        mInputEditorPopupOpen = true;
++        float rawX = 0, rawY = 0;
++        const bool connected = controllerStick->GetCalibrationInput(rawX, rawY);
++        constexpr float tau = 6.28318530718f;
++        const auto samples = Ship::ControllerStick::CALIBRATION_SAMPLES;
++        const float x = rawX - draft.centerX, y = rawY - draft.centerY;
++        const float radius = std::sqrt(x * x + y * y);
++        if (connected && draft.measuring && radius > MAX_AXIS_RANGE * .3f) {
++            const float angle = std::atan2(y, x) + tau;
++            const size_t sector = static_cast<size_t>(std::floor(angle / tau * samples + .5f)) % samples;
++            draft.radii[sector] = std::max(draft.radii[sector], radius);
++        }
++        ImGui::Text("Port %d - %s stick", port + 1, stick == Ship::LEFT ? "Analog" : "Additional");
++        if (!connected)
++            ImGui::TextWrapped("Connect and enable a controller for this port, and map all four stick directions to analog axes first.");
++        else if (!draft.measuring)
++            ImGui::TextWrapped("1. Release the stick and let it rest in the center. Then click Set center.");
++        else
++            ImGui::TextWrapped("2. Push the stick fully to the edge and slowly rotate it around the entire gate two or three times. Fill every direction, then save.");
++        const float side = std::min(ImGui::GetFontSize() * 10.f, ImGui::GetContentRegionAvail().x);
++        const ImVec2 origin = ImGui::GetCursorScreenPos();
++        const ImVec2 center(origin.x + side * .5f, origin.y + side * .5f);
++        const float scale = side * .3f / MAX_AXIS_RANGE;
++        ImGui::InvisibleButton("Calibration graph", ImVec2(side, side));
++        auto* draw = ImGui::GetWindowDrawList();
++        draw->AddRect(origin, ImVec2(origin.x + side, origin.y + side), IM_COL32(150, 150, 150, 255));
++        draw->AddCircle(center, MAX_AXIS_RANGE * scale, IM_COL32(110, 110, 110, 255), 64);
++        size_t covered = 0;
++        for (size_t i = 0; i < samples; ++i) {
++            const bool visited = draft.radii[i] >= MAX_AXIS_RANGE * .25f;
++            if (visited) ++covered;
++            const float angle = tau * i / samples;
++            const float r = (visited ? draft.radii[i] : MAX_AXIS_RANGE) * scale;
++            draw->AddCircleFilled(ImVec2(center.x + std::cos(angle) * r, center.y - std::sin(angle) * r),
++                ImGui::GetFontSize() * .10f, visited ? IM_COL32(70, 210, 120, 255) : IM_COL32(90, 90, 90, 255));
++            if (visited && draft.radii[(i + 1) % samples] > 0) {
++                const float nextAngle = tau * (i + 1) / samples;
++                const float nextR = draft.radii[(i + 1) % samples] * scale;
++                draw->AddLine(ImVec2(center.x + std::cos(angle) * r, center.y - std::sin(angle) * r),
++                    ImVec2(center.x + std::cos(nextAngle) * nextR, center.y - std::sin(nextAngle) * nextR),
++                    IM_COL32(70, 210, 120, 255));
++            }
++        }
++        draw->AddCircleFilled(ImVec2(center.x + x * scale, center.y - y * scale), ImGui::GetFontSize() * .16f,
++                              IM_COL32(255, 80, 80, 255));
++        ImGui::Text("Measured directions: %d / %d", static_cast<int>(covered), static_cast<int>(samples));
++        ImGui::ProgressBar(static_cast<float>(covered) / samples, ImVec2(-1, 0));
++        ImGui::TextWrapped("Move only the controller assigned to this port. Cancel keeps your previous calibration.");
++        ImGui::BeginDisabled(!connected || std::abs(rawX) > MAX_AXIS_RANGE * .25f || std::abs(rawY) > MAX_AXIS_RANGE * .25f);
++        if (ImGui::Button(draft.measuring ? "Restart from center" : "Set center")) {
++            draft = {};
++            draft.centerX = rawX; draft.centerY = rawY; draft.measuring = true;
++        }
++        ImGui::EndDisabled();
++        ImGui::BeginDisabled(!connected || !draft.measuring || covered != samples);
++        if (ImGui::Button("Save calibration") && controllerStick->SaveCalibration(draft.centerX, draft.centerY, draft.radii))
++            ImGui::CloseCurrentPopup();
++        ImGui::EndDisabled();
++        ImGui::SameLine();
++        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
++        ImGui::EndPopup();
++    }
+     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+     if (ImGui::TreeNode(StringHelper::Sprintf("Analog Stick Options##%d", id).c_str())) {
+         ImGui::Text("Sensitivity:");
+@@ -1207,11 +1310,26 @@ void InputEditorWindow::DrawDeviceToggles(uint8_t portIndex) {
  
      auto connectedDeviceManager =
          Ship::Context::GetRawInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager();
@@ -448,10 +1235,88 @@ index 54948e1..90d7587 100644
      for (const auto& [instanceId, name] : connectedDeviceManager->GetConnectedSDLGamepadNames()) {
          ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
          auto buttonColor = ImGui::GetStyleColorVec4(ImGuiCol_Button);
-@@ -1251,6 +1252,11 @@ void InputEditorWindow::DrawClearAllButton(uint8_t portIndex) {
+         auto buttonHoveredColor = ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered);
+         GetButtonColorsForPhysicalDeviceType(Ship::PhysicalDeviceType::SDLGamepad, buttonColor, buttonHoveredColor);
++        // Identify physical devices from digital buttons/hats only, including
++        // ignored devices and raw adapter buttons. Axis noise must not flash rows.
++        bool digitalPressed = false;
++        if (auto* joystick = SDL_JoystickFromInstanceID(instanceId)) {
++            for (int button = 0; button < SDL_JoystickNumButtons(joystick); ++button)
++                digitalPressed |= SDL_JoystickGetButton(joystick, button) != 0;
++            for (int hat = 0; hat < SDL_JoystickNumHats(joystick); ++hat)
++                digitalPressed |= SDL_JoystickGetHat(joystick, hat) != SDL_HAT_CENTERED;
++        }
++        static std::unordered_map<int32_t, double> lastDigitalInput;
++        if (digitalPressed) lastDigitalInput[instanceId] = ImGui::GetTime();
++        const auto activity = lastDigitalInput.find(instanceId);
++        if (activity != lastDigitalInput.end() && ImGui::GetTime() - activity->second < .25)
++            buttonColor = buttonHoveredColor = ImVec4(.15f, .75f, .3f, 1.f);
+         ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
+         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, buttonHoveredColor);
+         auto notIgnored = !connectedDeviceManager->PortIsIgnoringInstanceId(portIndex, instanceId);
+@@ -1249,10 +1367,168 @@ void InputEditorWindow::DrawClearAllButton(uint8_t portIndex) {
+     }
+ }
  
++namespace {
++// Each port tab carries a small square switch: filled = controller enabled, empty = disabled (sends neutral input).
++// The state is the saved console variable gControllerPorts.Disabled.PortN, read by ControlDeck::WriteToOSContPad.
++ImVec4 sPortSquares[MAXCONTROLLERS]; // last frame's screen rectangles (min x, min y, max x, max y); max <= min = none
++
++std::string PortDisabledCVar(uint8_t port) {
++    return StringHelper::Sprintf("gControllerPorts.Disabled.Port%d", port + 1);
++}
++
++bool PortDisabled(uint8_t port) {
++    return Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(PortDisabledCVar(port).c_str(), 0) != 0;
++}
++
++void TogglePort(uint8_t port) {
++    auto cvars = Ship::Context::GetRawInstance()->GetConsoleVariables();
++    cvars->SetInteger(PortDisabledCVar(port).c_str(), PortDisabled(port) ? 0 : 1);
++    cvars->Save();
++}
++
++float PortSquareSize() {
++    return ImGui::GetFontSize() * 0.825f;
++}
++
++// Called right after BeginTabItem: draws the square over the left end of that tab and remembers its rectangle.
++void DrawPortSquare(uint8_t port) {
++    const ImVec2 tabMin = ImGui::GetItemRectMin();
++    const ImVec2 tabMax = ImGui::GetItemRectMax();
++    const float size = PortSquareSize();
++    const float padX = ImGui::GetStyle().FramePadding.x;
++    const ImVec2 a(tabMin.x + padX, (tabMin.y + tabMax.y) * 0.5f - size * 0.5f);
++    const ImVec2 b(a.x + size, a.y + size);
++    sPortSquares[port] = ImVec4(a.x, a.y, b.x, b.y);
++
++    const bool enabled = !PortDisabled(port);
++    ImDrawList* draw = ImGui::GetWindowDrawList();
++    draw->AddRectFilled(a, b, enabled ? IM_COL32(60, 200, 90, 255) : IM_COL32(25, 25, 30, 255), 2.0f);
++    draw->AddRect(a, b, IM_COL32(235, 235, 235, 255), 2.0f);
++    if (enabled) { // check mark
++        draw->AddLine(ImVec2(a.x + size * 0.2f, a.y + size * 0.55f), ImVec2(a.x + size * 0.42f, a.y + size * 0.78f),
++                      IM_COL32(255, 255, 255, 255), 2.0f);
++        draw->AddLine(ImVec2(a.x + size * 0.42f, a.y + size * 0.78f), ImVec2(a.x + size * 0.82f, a.y + size * 0.22f),
++                      IM_COL32(255, 255, 255, 255), 2.0f);
++    }
++    if (ImGui::IsMouseHoveringRect(a, b, false)) {
++        ImGui::SetTooltip("Controller %d: %s\nClick the square to turn it %s.", port + 1,
++                          enabled ? "enabled" : "disabled", enabled ? "off" : "on");
++    }
++}
++} // namespace
++
  void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
-     if (ImGui::BeginTabItem(StringHelper::Sprintf("Port %d###port%d", portIndex + 1, portIndex).c_str())) {
+-    if (ImGui::BeginTabItem(StringHelper::Sprintf("Port %d###port%d", portIndex + 1, portIndex).c_str())) {
++    // Leave room at the left of the tab for the square switch
++    const float spaceWidth = ImGui::CalcTextSize(" ").x;
++    const int spaces = static_cast<int>(std::ceil((PortSquareSize() + ImGui::GetStyle().FramePadding.x) / spaceWidth)) + 1;
++    const bool tabOpen =
++        ImGui::BeginTabItem(StringHelper::Sprintf("%*sP%d###port%d", spaces, "", portIndex + 1, portIndex).c_str());
++    DrawPortSquare(portIndex);
++    if (tabOpen) {
 +        if (mPortProfilesDrawCallback) {
 +            ImGui::BeginDisabled(TestingRumble());
 +            if (mPortProfilesDrawCallback(portIndex)) mInputEditorPopupOpen = true;
@@ -459,20 +1324,516 @@ index 54948e1..90d7587 100644
 +        }
          DrawClearAllButton(portIndex);
          DrawSetDefaultsButton(portIndex);
++
++        // Stage mappings until Finish so Cancel never changes the player's setup.
++        struct MapStep { const char* name; CONTROLLERBUTTONS_T button; Ship::Direction direction; bool stick; };
++        static const std::array<MapStep, 18> mapSteps = {{
++            {"A", BTN_A, Ship::UP, false}, {"B", BTN_B, Ship::UP, false},
++            {"Start", BTN_START, Ship::UP, false}, {"L", BTN_L, Ship::UP, false},
++            {"R", BTN_R, Ship::UP, false}, {"Z", BTN_Z, Ship::UP, false},
++            {"C Up", BTN_CUP, Ship::UP, false}, {"C Down", BTN_CDOWN, Ship::UP, false},
++            {"C Left", BTN_CLEFT, Ship::UP, false}, {"C Right", BTN_CRIGHT, Ship::UP, false},
++            {"D-Pad Up", BTN_DUP, Ship::UP, false}, {"D-Pad Down", BTN_DDOWN, Ship::UP, false},
++            {"D-Pad Left", BTN_DLEFT, Ship::UP, false}, {"D-Pad Right", BTN_DRIGHT, Ship::UP, false},
++            {"Analog Stick Up", 0, Ship::UP, true}, {"Analog Stick Down", 0, Ship::DOWN, true},
++            {"Analog Stick Left", 0, Ship::LEFT, true}, {"Analog Stick Right", 0, Ship::RIGHT, true}
++        }};
++        static std::array<std::shared_ptr<Ship::ControllerButtonMapping>, 18> pendingButtons;
++        static std::array<std::shared_ptr<Ship::ControllerAxisDirectionMapping>, 18> pendingDirections;
++        static size_t mapStep = 0;
++        static double neutralSince = 0;
++        const auto mapPopup = StringHelper::Sprintf("Map all controller###mapAllController%d", portIndex);
++        if (ImGui::Button("Map all controller")) {
++            pendingButtons.fill(nullptr);
++            pendingDirections.fill(nullptr);
++            mapStep = 0;
++            neutralSince = 0;
++            ImGui::OpenPopup(mapPopup.c_str());
++        }
++        if (ImGui::BeginPopupModal(mapPopup.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
++            mInputEditorPopupOpen = true;
++            auto deck = Ship::Context::GetRawInstance()->GetControlDeck();
++            auto controller = deck->GetControllerByPort(portIndex);
++            auto& pads = deck->GetConnectedPhysicalDeviceManager()->GetConnectedSDLGamepadsForPort(portIndex);
++            if (mapStep < mapSteps.size()) {
++                const auto& step = mapSteps[mapStep];
++                ImGui::Text("Player %d: %d / %d", portIndex + 1, static_cast<int>(mapStep + 1),
++                            static_cast<int>(mapSteps.size()));
++                ImGui::Text("Press or move: %s", step.name);
++                ImGui::TextWrapped("Use a checked controller. Release all buttons and center the sticks between steps.");
++                if (pads.empty()) ImGui::TextUnformatted("Check a connected controller to begin.");
++                bool neutral = !pads.empty();
++                for (const auto& [instance, pad] : pads) {
++                    auto* joystick = SDL_GameControllerGetJoystick(pad);
++                    if (!joystick) continue;
++                    for (int button = 0; button < SDL_JoystickNumButtons(joystick); ++button)
++                        if (SDL_JoystickGetButton(joystick, button)) neutral = false;
++                    for (int hat = 0; hat < SDL_JoystickNumHats(joystick); ++hat)
++                        if (SDL_JoystickGetHat(joystick, hat) != SDL_HAT_CENTERED) neutral = false;
++                    for (int axis = SDL_CONTROLLER_AXIS_LEFTX; axis < SDL_CONTROLLER_AXIS_MAX; ++axis)
++                        if (std::abs(static_cast<int>(SDL_GameControllerGetAxis(pad, static_cast<SDL_GameControllerAxis>(axis)))) > 16384)
++                            neutral = false;
++                }
++                if (neutral && neutralSince == 0) neutralSince = ImGui::GetTime();
++                const bool ready = neutralSince != 0 && ImGui::GetTime() - neutralSince >= .20;
++                if (!ready) ImGui::TextUnformatted("Release controls to continue...");
++                if (ImGui::Button("Skip")) { ++mapStep; neutralSince = 0; }
++                else if (ready && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
++                    bool captured = false;
++                    if (step.stick) {
++                        auto mapping = Ship::AxisDirectionMappingFactory::CreateAxisDirectionMappingFromSDLInput(
++                            portIndex, Ship::LEFT_STICK, step.direction);
++                        if (mapping) { pendingDirections[mapStep] = mapping; captured = true; }
++                    } else {
++                        auto mapping = Ship::ButtonMappingFactory::CreateButtonMappingFromSDLInput(portIndex, step.button);
++                        if (mapping) { pendingButtons[mapStep] = mapping; captured = true; }
++                    }
++                    if (captured) { ++mapStep; neutralSince = 0; }
++                }
++            } else {
++                ImGui::TextUnformatted("Controller mapping ready. Save these mappings?");
++                if (ImGui::Button("Save mappings")) {
++                    for (size_t i = 0; i < mapSteps.size(); ++i) {
++                        if (pendingButtons[i]) {
++                            auto button = controller->GetButton(mapSteps[i].button);
++                            button->ClearAllButtonMappingsForDeviceType(Ship::PhysicalDeviceType::SDLGamepad);
++                            button->AddButtonMapping(pendingButtons[i]);
++                            pendingButtons[i]->SaveToConfig();
++                            button->SaveButtonMappingIdsToConfig();
++                        } else if (pendingDirections[i]) {
++                            auto stick = controller->GetLeftStick();
++                            for (const auto& [id, mapping] : stick->GetAllAxisDirectionMappingByDirection(mapSteps[i].direction))
++                                if (mapping->GetPhysicalDeviceType() == Ship::PhysicalDeviceType::SDLGamepad)
++                                    stick->ClearAxisDirectionMapping(mapSteps[i].direction, id);
++                            stick->AddAxisDirectionMapping(mapSteps[i].direction, pendingDirections[i]);
++                            pendingDirections[i]->SaveToConfig();
++                            stick->SaveAxisDirectionMappingIdsToConfig();
++                        }
++                    }
++                    Ship::Context::GetRawInstance()->GetConsoleVariables()->SetInteger(
++                        StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.HasConfig", portIndex + 1).c_str(), 1);
++                    Ship::Context::GetRawInstance()->GetConsoleVariables()->Save();
++                    mInputEditorPopupOpen = false;
++                    ImGui::CloseCurrentPopup();
++                }
++            }
++            ImGui::SameLine();
++            if (ImGui::Button("Cancel")) { mInputEditorPopupOpen = false; ImGui::CloseCurrentPopup(); }
++            ImGui::EndPopup();
++        }
          DrawDeviceToggles(portIndex);
-@@ -1413,8 +1419,8 @@ void InputEditorWindow::DrawSetDefaultsButton(uint8_t portIndex) {
+ 
+         UpdateBitmaskToMappingIds(portIndex);
+@@ -1262,6 +1538,18 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
+         ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+         ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+ 
++        // Use the available menu width for the three primary control groups.
++        // Keep the original stacked layout in narrow/pop-out windows.
++        const bool horizontalGroups = ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * 54.f;
++        const bool groupTable = horizontalGroups && ImGui::BeginTable("Controller input groups", 3,
++            ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV);
++        if (groupTable) {
++            ImGui::TableSetupColumn("Buttons", ImGuiTableColumnFlags_WidthStretch, .38f);
++            ImGui::TableSetupColumn("D-Pad", ImGuiTableColumnFlags_WidthStretch, .24f);
++            ImGui::TableSetupColumn("Analog Stick", ImGuiTableColumnFlags_WidthStretch, .38f);
++            ImGui::TableNextRow();
++            ImGui::TableSetColumnIndex(0);
++        }
+         if (ImGui::CollapsingHeader("Buttons", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+             DrawButtonLine("A", portIndex, BTN_A, CHIP_COLOR_N64_BLUE);
+             DrawButtonLine("B", portIndex, BTN_B, CHIP_COLOR_N64_GREEN);
+@@ -1279,6 +1567,7 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
+                            CHIP_COLOR_N64_YELLOW);
+         }
+ 
++        if (groupTable) ImGui::TableSetColumnIndex(1);
+         if (ImGui::CollapsingHeader("D-Pad", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+             DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_UP).c_str(), portIndex, BTN_DUP);
+             DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_DOWN).c_str(), portIndex, BTN_DDOWN);
+@@ -1286,9 +1575,11 @@ void InputEditorWindow::DrawPortTab(uint8_t portIndex) {
+             DrawButtonLine(StringHelper::Sprintf("%s", ICON_FA_ARROW_RIGHT).c_str(), portIndex, BTN_DRIGHT);
+         }
+ 
++        if (groupTable) ImGui::TableSetColumnIndex(2);
+         if (ImGui::CollapsingHeader("Analog Stick", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+             DrawStickSection(portIndex, Ship::LEFT, 0);
+         }
++        if (groupTable) ImGui::EndTable();
+ 
+         if (ImGui::CollapsingHeader("Additional (\"Right\") Stick")) {
+             DrawStickSection(portIndex, Ship::RIGHT, 1, CHIP_COLOR_N64_YELLOW);
+@@ -1413,8 +1704,36 @@ void InputEditorWindow::DrawSetDefaultsButton(uint8_t portIndex) {
  }
  
  void InputEditorWindow::DrawElement() {
 -    ImGui::BeginTabBar("##ControllerConfigPortTabs");
 -    for (uint8_t i = 0; i < 4; i++) {
++    // A click on a port's square only toggles it: consume the click before the tab sees it, so the tab isn't selected.
++    ImGuiIO& io = ImGui::GetIO();
++    if (io.MouseClicked[0] && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows)) {
++        for (uint8_t i = 0; i < MAXCONTROLLERS; i++) {
++            const ImVec4 r = sPortSquares[i];
++            if (r.z > r.x && ImGui::IsMouseHoveringRect(ImVec2(r.x, r.y), ImVec2(r.z, r.w), false)) {
++                TogglePort(i);
++                io.MouseClicked[0] = false;
++                break;
++            }
++        }
++    }
++    for (auto& r : sPortSquares) r = ImVec4(0, 0, 0, 0); // squares scrolled out of view are not clickable
 +    ImGui::BeginTabBar("##ControllerConfigPortTabs", ImGuiTabBarFlags_FittingPolicyScroll);
++    bool allEnabled = true;
++    for (uint8_t i = 0; i < MAXCONTROLLERS; i++) {
++        if (PortDisabled(i)) {
++            allEnabled = false;
++            break;
++        }
++    }
++    if (ImGui::TabItemButton(allEnabled ? "Disable all###AllPorts" : "Enable all###AllPorts",
++                             ImGuiTabItemFlags_Leading)) {
++        auto cvars = Ship::Context::GetRawInstance()->GetConsoleVariables();
++        for (uint8_t i = 0; i < MAXCONTROLLERS; i++) {
++            cvars->SetInteger(PortDisabledCVar(i).c_str(), allEnabled ? 1 : 0);
++        }
++        cvars->Save();
++    }
 +    for (uint8_t i = 0; i < MAXCONTROLLERS; i++) {
          DrawPortTab(i);
      }
      ImGui::EndTabBar();
+diff --git a/src/ship/Context.cpp b/src/ship/Context.cpp
+index 361a1f75..f1d4bd0d 100644
+--- a/src/ship/Context.cpp
++++ b/src/ship/Context.cpp
+@@ -2,6 +2,13 @@
+ #include "ship/controller/controldevice/controller/mapping/keyboard/KeyboardScancodes.h"
+ #include <cstring>
+ #include <iostream>
++#include <filesystem>
++#include <stdexcept>
++#if !defined(_WIN32)
++#include <sys/file.h>
++#include <fcntl.h>
++#include <unistd.h>
++#endif
+ #include <SDL2/SDL.h>
+ #include <spdlog/sinks/rotating_file_sink.h>
+ #include <spdlog/sinks/stdout_color_sinks.h>
+@@ -588,8 +595,62 @@ std::string Context::GetPathRelativeToAppBundle(const std::string& path) {
+     return GetAppBundlePath() + "/" + path;
+ }
+ 
++// Keep each concurrently running game in its own writable profile. Asset and
++// mod paths still resolve to the installation so they are shared read-only.
++static unsigned int GetGameInstanceSlot(const std::filesystem::path& appDirectory) {
++    static const unsigned int slot = [&]() {
++        const auto lockDirectory = appDirectory / "instance-locks";
++        std::error_code error;
++        std::filesystem::create_directories(lockDirectory, error);
++        if (error) throw std::runtime_error("Cannot create game instance lock directory");
++        for (unsigned int index = 0; index < 128; ++index) {
++            const auto lockPath = lockDirectory / (std::to_string(index) + ".lock");
++#ifdef _WIN32
++            // Holding an exclusive handle reserves this slot until process exit,
++            // including after a crash. Lock files themselves can remain on disk.
++            HANDLE handle = CreateFileW(lockPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
++                                        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++            if (handle != INVALID_HANDLE_VALUE) return index;
++            const DWORD lockError = GetLastError();
++            if (lockError != ERROR_SHARING_VIOLATION && lockError != ERROR_LOCK_VIOLATION)
++                throw std::runtime_error("Cannot open game instance lock");
++#else
++            int fd = open(lockPath.c_str(), O_CREAT | O_RDWR, 0600);
++            if (fd < 0) throw std::runtime_error("Cannot open game instance lock");
++            if (flock(fd, LOCK_EX | LOCK_NB) == 0) return index;
++            close(fd);
++#endif
++        }
++        throw std::runtime_error("Too many game instances are running");
++    }();
++    return slot;
++}
++
+ std::string Context::GetPathRelativeToAppDirectory(const std::string& path, const std::string& appName) {
+-    return GetAppDirectoryPath(appName) + "/" + path;
++    const std::filesystem::path appDirectory = GetAppDirectoryPath(appName);
++    const bool mutableFile = path == "spaghettify.cfg.json" || path == "default.sav" ||
++        path == "imgui.ini" || path == "imgui_log.txt" || path == "cvars.cfg" ||
++        path.rfind("controllerPak_", 0) == 0 || path == "logs" || path.rfind("logs/", 0) == 0;
++    if (!mutableFile) return (appDirectory / path).string();
++
++    const unsigned int slot = GetGameInstanceSlot(appDirectory);
++    if (slot == 0) return (appDirectory / path).string();
++
++    const auto profile = appDirectory / "instances" / std::to_string(slot + 1);
++    const auto target = profile / path;
++    std::error_code error;
++    std::filesystem::create_directories(path == "logs" ? target : target.parent_path(), error);
++    if (error) throw std::runtime_error("Cannot create game instance data directory");
++    // On first use, inherit the main profile's settings and progress. After
++    // that, each instance owns its copy and never overwrites another's data.
++    if (path != "logs" && path.rfind("logs/", 0) != 0 && !std::filesystem::exists(target)) {
++        const auto source = appDirectory / path;
++        if (std::filesystem::is_regular_file(source)) {
++            std::filesystem::copy_file(source, target, std::filesystem::copy_options::skip_existing, error);
++            if (error) throw std::runtime_error("Cannot initialize game instance data");
++        }
++    }
++    return target.string();
+ }
+ 
+ std::string Context::LocateFileAcrossAppDirs(const std::string& path, const std::string& appName) {
+diff --git a/src/ship/controller/controldevice/controller/ControllerStick.cpp b/src/ship/controller/controldevice/controller/ControllerStick.cpp
+index e3ba480d..6c85e8c1 100644
+--- a/src/ship/controller/controldevice/controller/ControllerStick.cpp
++++ b/src/ship/controller/controldevice/controller/ControllerStick.cpp
+@@ -14,6 +14,8 @@
+ 
+ #include "ship/Context.h"
+ #include "ship/window/Window.h"
++#include "ship/controller/controldeck/ControlDeck.h"
++#include "ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.h"
+ 
+ // for some reason windows isn't seeing M_PI
+ // this is copied from my system's math.h
+@@ -48,6 +50,7 @@ void ControllerStick::ClearAllMappings() {
+     SaveAxisDirectionMappingIdsToConfig();
+     SetDeadzone(20);
+     SetNotchSnapAngle(0);
++    ResetCalibration();
+ }
+ 
+ void ControllerStick::ClearAllMappingsForDeviceType(PhysicalDeviceType physicalDeviceType) {
+@@ -199,6 +202,72 @@ void ControllerStick::ReloadAllMappingsFromConfig() {
+                               stickIndexToConfigStickIndexName[mStickIndex].c_str())
+             .c_str(),
+         0));
++
++    auto vars = Context::GetRawInstance()->GetConsoleVariables();
++    const auto prefix = StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.%s.Calibration",
++        mPortIndex + 1, stickIndexToConfigStickIndexName[mStickIndex].c_str());
++    mCalibrated = vars->GetInteger((prefix + ".Enabled").c_str(), 0) != 0;
++    mCalibrationCenterX = vars->GetFloat((prefix + ".CenterX").c_str(), 0);
++    mCalibrationCenterY = vars->GetFloat((prefix + ".CenterY").c_str(), 0);
++    if (!std::isfinite(mCalibrationCenterX) || !std::isfinite(mCalibrationCenterY) ||
++        std::abs(mCalibrationCenterX) > MAX_AXIS_RANGE * .25f || std::abs(mCalibrationCenterY) > MAX_AXIS_RANGE * .25f)
++        mCalibrated = false;
++    for (size_t i = 0; i < CALIBRATION_SAMPLES; ++i) {
++        mCalibrationRadii[i] = vars->GetFloat((prefix + ".Radius" + std::to_string(i)).c_str(), MAX_AXIS_RANGE);
++        if (!std::isfinite(mCalibrationRadii[i]) || mCalibrationRadii[i] < MAX_AXIS_RANGE * .25f ||
++            mCalibrationRadii[i] > MAX_AXIS_RANGE * 2.f) mCalibrated = false;
++    }
++}
++
++bool ControllerStick::GetCalibrationInput(float& x, float& y) {
++    x = y = 0;
++    const auto& devices = Context::GetRawInstance()->GetControlDeck()->GetConnectedPhysicalDeviceManager()
++        ->GetConnectedSDLGamepadsForPort(mPortIndex);
++    if (devices.empty()) return false;
++    float values[4]{};
++    int index = 0;
++    for (auto direction : {RIGHT, LEFT, UP, DOWN}) {
++        bool mapped = false;
++        for (const auto& [id, mapping] : mAxisDirectionMappings[direction]) {
++            auto axis = std::dynamic_pointer_cast<SDLAxisDirectionToAxisDirectionMapping>(mapping);
++            if (!axis) continue;
++            mapped = true;
++            values[index] = std::max(values[index], axis->GetCalibrationAxisValue());
++        }
++        if (!mapped) return false;
++        ++index;
++    }
++    x = values[0] - values[1]; y = values[2] - values[3];
++    return std::isfinite(x) && std::isfinite(y);
++}
++
++bool ControllerStick::SaveCalibration(float centerX, float centerY,
++                                     const std::array<float, CALIBRATION_SAMPLES>& radii) {
++    if (!std::isfinite(centerX) || !std::isfinite(centerY) || std::abs(centerX) > MAX_AXIS_RANGE * .25f ||
++        std::abs(centerY) > MAX_AXIS_RANGE * .25f) return false;
++    for (float radius : radii)
++        if (!std::isfinite(radius) || radius < MAX_AXIS_RANGE * .25f || radius > MAX_AXIS_RANGE * 2.f) return false;
++    mCalibrationCenterX = centerX; mCalibrationCenterY = centerY;
++    mCalibrationRadii = radii; mCalibrated = true;
++    auto vars = Context::GetRawInstance()->GetConsoleVariables();
++    const auto prefix = StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.%s.Calibration",
++        mPortIndex + 1, stickIndexToConfigStickIndexName[mStickIndex].c_str());
++    vars->SetInteger((prefix + ".Enabled").c_str(), 1);
++    vars->SetFloat((prefix + ".CenterX").c_str(), centerX);
++    vars->SetFloat((prefix + ".CenterY").c_str(), centerY);
++    for (size_t i = 0; i < CALIBRATION_SAMPLES; ++i)
++        vars->SetFloat((prefix + ".Radius" + std::to_string(i)).c_str(), radii[i]);
++    vars->Save();
++    return true;
++}
++
++void ControllerStick::ResetCalibration() {
++    mCalibrated = false;
++    const auto prefix = StringHelper::Sprintf(CVAR_PREFIX_CONTROLLERS ".Port%d.%s.Calibration",
++        mPortIndex + 1, stickIndexToConfigStickIndexName[mStickIndex].c_str());
++    auto vars = Context::GetRawInstance()->GetConsoleVariables();
++    vars->SetInteger((prefix + ".Enabled").c_str(), 0);
++    vars->Save();
+ }
+ 
+ double ControllerStick::GetClosestNotch(double angle, double approximationThreshold) {
+@@ -230,6 +299,18 @@ void ControllerStick::Process(int8_t& x, int8_t& y) {
+     double sx = GetAxisDirectionValue(RIGHT) - GetAxisDirectionValue(LEFT);
+     double sy = GetAxisDirectionValue(UP) - GetAxisDirectionValue(DOWN);
+ 
++    auto deck = Context::GetRawInstance()->GetControlDeck();
++    if (mCalibrated && !deck->GamepadGameInputBlocked() &&
++        !deck->GetConnectedPhysicalDeviceManager()->GetConnectedSDLGamepadsForPort(mPortIndex).empty()) {
++        sx -= mCalibrationCenterX; sy -= mCalibrationCenterY;
++        const double sector = (std::atan2(sy, sx) + M_TAU) / (M_TAU) * CALIBRATION_SAMPLES;
++        const int first = static_cast<int>(std::floor(sector)) % CALIBRATION_SAMPLES;
++        const double fraction = sector - std::floor(sector);
++        const double radius = mCalibrationRadii[first] * (1 - fraction) +
++            mCalibrationRadii[(first + 1) % CALIBRATION_SAMPLES] * fraction;
++        sx *= MAX_AXIS_RANGE / radius; sy *= MAX_AXIS_RANGE / radius;
++    }
++
+     double ux = fabs(sx) * mSensitivity;
+     double uy = fabs(sy) * mSensitivity;
+ 
+diff --git a/src/ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.cpp b/src/ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.cpp
+index f3b3c404..d5598237 100644
+--- a/src/ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/factories/AxisDirectionMappingFactory.cpp
+@@ -180,6 +180,12 @@ AxisDirectionMappingFactory::CreateAxisDirectionMappingFromSDLInput(uint8_t port
+             break;
+         }
+ 
++        const int32_t rawButton = SDLButtonToAnyMapping::FindPressedUnmappedButton(gamepad);
++        if (rawButton >= 0) {
++            mapping = std::make_shared<SDLButtonToAxisDirectionMapping>(portIndex, stickIndex, direction, rawButton);
++            break;
++        }
++
+         for (int32_t i = SDL_CONTROLLER_AXIS_LEFTX; i < SDL_CONTROLLER_AXIS_MAX; i++) {
+             const auto axis = static_cast<SDL_GameControllerAxis>(i);
+             const auto axisValue = SDL_GameControllerGetAxis(gamepad, axis) / 32767.0f;
+diff --git a/src/ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.cpp b/src/ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.cpp
+index 80879270..3c58e6ff 100644
+--- a/src/ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/factories/ButtonMappingFactory.cpp
+@@ -142,6 +142,12 @@ ButtonMappingFactory::CreateButtonMappingFromSDLInput(uint8_t portIndex, CONTROL
+             break;
+         }
+ 
++        const int32_t rawButton = SDLButtonToAnyMapping::FindPressedUnmappedButton(gamepad);
++        if (rawButton >= 0) {
++            mapping = std::make_shared<SDLButtonToButtonMapping>(portIndex, bitmask, rawButton);
++            break;
++        }
++
+         for (int32_t i = SDL_CONTROLLER_AXIS_LEFTX; i < SDL_CONTROLLER_AXIS_MAX; i++) {
+             const auto axis = static_cast<SDL_GameControllerAxis>(i);
+             const auto axisValue = SDL_GameControllerGetAxis(gamepad, axis) / 32767.0f;
+diff --git a/src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.cpp b/src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.cpp
+index 607e6fab..d6432225 100644
+--- a/src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/sdl/SDLAxisDirectionToAxisDirectionMapping.cpp
+@@ -22,6 +22,10 @@ float SDLAxisDirectionToAxisDirectionMapping::GetNormalizedAxisDirectionValue()
+     if (Context::GetRawInstance()->GetControlDeck()->GamepadGameInputBlocked()) {
+         return 0.0f;
+     }
++    return GetCalibrationAxisValue();
++}
++
++float SDLAxisDirectionToAxisDirectionMapping::GetCalibrationAxisValue() {
+ 
+     // todo: i don't like making a vector here, not sure what a better solution is
+     std::vector<float> normalizedValues = {};
+diff --git a/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.cpp b/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.cpp
+index 907764ef..ddd53e48 100644
+--- a/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAnyMapping.cpp
+@@ -6,13 +6,15 @@
+ namespace Ship {
+ SDLButtonToAnyMapping::SDLButtonToAnyMapping(int32_t sdlControllerButton)
+     : ControllerInputMapping(PhysicalDeviceType::SDLGamepad) {
+-    mControllerButton = static_cast<SDL_GameControllerButton>(sdlControllerButton);
++    mControllerButton = sdlControllerButton;
+ }
+ 
+ SDLButtonToAnyMapping::~SDLButtonToAnyMapping() {
+ }
+ 
+ std::string SDLButtonToAnyMapping::GetPhysicalInputName() {
++    if (mControllerButton >= RAW_JOYSTICK_BUTTON_BASE)
++        return StringHelper::Sprintf("Raw button %d", mControllerButton - RAW_JOYSTICK_BUTTON_BASE);
+     switch (mControllerButton) {
+         case SDL_CONTROLLER_BUTTON_A:
+             return "A";
+@@ -69,4 +71,38 @@ std::string SDLButtonToAnyMapping::GetGenericButtonName() {
+ std::string SDLButtonToAnyMapping::GetPhysicalDeviceName() {
+     return "SDL Gamepad";
+ }
++
++bool SDLButtonToAnyMapping::IsButtonPressed(SDL_GameController* gamepad) const {
++    if (!gamepad || !SDL_GameControllerGetAttached(gamepad)) return false;
++    if (mControllerButton >= RAW_JOYSTICK_BUTTON_BASE) {
++        auto* joystick = SDL_GameControllerGetJoystick(gamepad);
++        const int32_t button = mControllerButton - RAW_JOYSTICK_BUTTON_BASE;
++        return joystick && button < SDL_JoystickNumButtons(joystick) && SDL_JoystickGetButton(joystick, button);
++    }
++    return mControllerButton >= SDL_CONTROLLER_BUTTON_A && mControllerButton < SDL_CONTROLLER_BUTTON_MAX &&
++        SDL_GameControllerGetButton(gamepad, static_cast<SDL_GameControllerButton>(mControllerButton));
++}
++
++int32_t SDLButtonToAnyMapping::FindPressedUnmappedButton(SDL_GameController* gamepad) {
++    if (!gamepad || !SDL_GameControllerGetAttached(gamepad)) return -1;
++    auto* joystick = SDL_GameControllerGetJoystick(gamepad);
++    if (!joystick) return -1;
++    for (int32_t button = 0; button < SDL_JoystickNumButtons(joystick); ++button) {
++        if (!SDL_JoystickGetButton(joystick, button)) continue;
++        bool mapped = false;
++        for (int standard = SDL_CONTROLLER_BUTTON_A; standard < SDL_CONTROLLER_BUTTON_MAX; ++standard) {
++            const auto bind = SDL_GameControllerGetBindForButton(gamepad, static_cast<SDL_GameControllerButton>(standard));
++            if (bind.bindType == SDL_CONTROLLER_BINDTYPE_BUTTON && bind.value.button == button) { mapped = true; break; }
++        }
++        if (mapped) continue;
++        for (int axis = SDL_CONTROLLER_AXIS_LEFTX; axis < SDL_CONTROLLER_AXIS_MAX; ++axis) {
++            const auto bind = SDL_GameControllerGetBindForAxis(gamepad, static_cast<SDL_GameControllerAxis>(axis));
++            if (bind.bindType == SDL_CONTROLLER_BINDTYPE_BUTTON && bind.value.button == button) { mapped = true; break; }
++        }
++        // GameCube digital trigger clicks are raw buttons 10/11 in SDL2's
++        // adapter driver, omitted from its standard game-controller mapping.
++        if (!mapped) return RAW_JOYSTICK_BUTTON_BASE + button;
++    }
++    return -1;
++}
+ } // namespace Ship
+diff --git a/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAxisDirectionMapping.cpp b/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAxisDirectionMapping.cpp
+index 9f7e32f2..16ff9fbf 100644
+--- a/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAxisDirectionMapping.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToAxisDirectionMapping.cpp
+@@ -25,7 +25,7 @@ float SDLButtonToAxisDirectionMapping::GetNormalizedAxisDirectionValue() {
+                                                  ->GetControlDeck()
+                                                  ->GetConnectedPhysicalDeviceManager()
+                                                  ->GetConnectedSDLGamepadsForPort(mPortIndex)) {
+-        if (SDL_GameControllerGetButton(gamepad, mControllerButton)) {
++        if (IsButtonPressed(gamepad)) {
+             return MAX_AXIS_RANGE;
+         }
+     }
+diff --git a/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.cpp b/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.cpp
+index 4f669a72..8d66473b 100644
+--- a/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.cpp
++++ b/src/ship/controller/controldevice/controller/mapping/sdl/SDLButtonToButtonMapping.cpp
+@@ -22,7 +22,7 @@ void SDLButtonToButtonMapping::UpdatePad(CONTROLLERBUTTONS_T& padButtons) {
+                                                  ->GetControlDeck()
+                                                  ->GetConnectedPhysicalDeviceManager()
+                                                  ->GetConnectedSDLGamepadsForPort(mPortIndex)) {
+-        if (SDL_GameControllerGetButton(gamepad, mControllerButton)) {
++        if (IsButtonPressed(gamepad)) {
+             padButtons |= mBitmask;
+             return;
+         }
 diff --git a/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp b/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp
-index 7f0397e..ee10833 100644
+index 7f0397e2..b8318ff7 100644
 --- a/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp
 +++ b/src/ship/controller/physicaldevice/ConnectedPhysicalDeviceManager.cpp
 @@ -1,5 +1,9 @@
@@ -584,8 +1945,8 @@ index 7f0397e..ee10833 100644
 +    LoadAssignments();
 +    std::vector<std::string> keys;
 +    if (portIndex < 16)
-+        for (const auto& [key, mask] : mRememberedIgnoredPorts)
-+            if (!(mask & (1u << portIndex))) keys.push_back(key);
++        for (const auto& [instance, key] : mDeviceKeys)
++            if (!PortIsIgnoringInstanceId(portIndex, instance)) keys.push_back(key);
 +    return keys;
 +}
 +
@@ -648,7 +2009,7 @@ index 7f0397e..ee10833 100644
              continue;
          }
  
-@@ -99,10 +193,46 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
+@@ -99,10 +193,68 @@ void ConnectedPhysicalDeviceManager::RefreshConnectedSDLGamepads() {
  
          mConnectedSDLGamepads[instanceId] = gamepad;
          mConnectedSDLGamepadNames[instanceId] = gamepadName;
@@ -676,6 +2037,26 @@ index 7f0397e..ee10833 100644
 +                        [&](const auto& entry) { return entry.second == key; }));
 +            }
 +        }
++        // Multi-port adapters can share a serial/path across separate SDL slots.
++        // Keep each live slot's saved assignment independent.
++        const std::string identity = key;
++        const auto inUse = [&](const std::string& candidate) {
++            return std::any_of(mDeviceKeys.begin(), mDeviceKeys.end(),
++                [&](const auto& entry) { return entry.second == candidate; });
++        };
++        const auto previousIdentity = previousDeviceKeys.find(instanceId);
++        if (previousIdentity != previousDeviceKeys.end() &&
++            previousIdentity->second.rfind(identity + "|duplicate:", 0) == 0 && !inUse(previousIdentity->second)) {
++            key = previousIdentity->second;
++        } else if (inUse(key)) {
++            unsigned slot = 1;
++            do { key = identity + "|duplicate:" + std::to_string(slot++); }
++            while (inUse(key) || std::any_of(previousDeviceKeys.begin(), previousDeviceKeys.end(),
++                [&](const auto& entry) {
++                    auto* pad = SDL_GameControllerFromInstanceID(entry.first);
++                    return entry.first != instanceId && entry.second == key && pad && SDL_GameControllerGetAttached(pad);
++                }));
++        }
 +        mDeviceKeys[instanceId] = key;
 +        if (!mRememberedIgnoredPorts.contains(key)) {
 +            uint16_t occupied = 0;
@@ -698,8 +2079,10 @@ index 7f0397e..ee10833 100644
 +    SaveAssignments();
  }
  } // namespace Ship
++
++
 diff --git a/src/ship/window/Window.cpp b/src/ship/window/Window.cpp
-index fc47182..bfff3cc 100644
+index fc471825..bfff3cc0 100644
 --- a/src/ship/window/Window.cpp
 +++ b/src/ship/window/Window.cpp
 @@ -5,6 +5,7 @@

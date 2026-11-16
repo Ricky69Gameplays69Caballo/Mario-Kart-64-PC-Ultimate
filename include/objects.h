@@ -8,7 +8,8 @@
 extern "C" {
 #endif
 
-#define OBJECT_LIST_SIZE 0x226
+// Each racer reserves one object. Keep the original capacity for course and HUD objects.
+#define OBJECT_LIST_SIZE (0x226 + NUM_RACERS - 8)
 #define SOME_OBJECT_INDEX_LIST_SIZE 32
 
 typedef struct {

@@ -192,7 +192,17 @@ void setup_race(void) {
     int i;
 
     LUSLOG_DEBUG("Setup Race!", 0);
-    LUSLOG_DEBUG("Game Speed: %d", gTickLogic);
+    LUSLOG_DEBUG("Logic ticks per frame: %d", gTickLogic);
+    // The 200cc class uses the 150cc table index with a separate speed override.
+    // Log both values so the selected class and the applied override are clear.
+    if (gRace200cc && gModeSelection != BATTLE) {
+        LUSLOG_INFO("Race engine class: 200cc; applied speed override: 200cc (player and CPU)");
+    } else if (gRaceCustomCC) {
+        LUSLOG_INFO("Race engine class index: %d; applied custom speed override: %.1fcc", gCCSelection,
+                    CVarGetFloat("gCustomCC", 150.0f));
+    } else {
+        LUSLOG_INFO("Race engine class index: %d; 200cc override: OFF; custom speed override: OFF", gCCSelection);
+    }
 
     gPlayerCountSelection1 = gPlayerCount;
     if (gGamestate != RACING) {
@@ -228,7 +238,9 @@ void setup_race(void) {
     func_80005310();
     // Adopt native-menu human-only GP before choosing racer and camera counts.
     LocalMP_ResetRace();
+    Diagnostics_BeginLightningRace();
     CM_CleanCameras();
+    if (gQuickTimeTrial) bCourseGhostDisabled = 1;
     spawn_players_and_cameras();
     load_kart_textures();
     init_hud();

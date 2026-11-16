@@ -177,9 +177,9 @@ void RainbowRoad::DrawTrackObjects(s32 cameraId) {
 void RainbowRoad::SomeSounds() {
 }
 
-void RainbowRoad::WhatDoesThisDo(Player* player, int8_t playerId) {}
+void RainbowRoad::WhatDoesThisDo(Player* player, int16_t playerId) {}
 
-void RainbowRoad::WhatDoesThisDoAI(Player* player, int8_t playerId) {}
+void RainbowRoad::WhatDoesThisDoAI(Player* player, int16_t playerId) {}
 
 void RainbowRoad::Draw(ScreenContext* arg0) {
     gSPTexture(gDisplayListHead++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
@@ -193,7 +193,7 @@ void RainbowRoad::DrawCredits() {
     gSPDisplayList(gDisplayListHead++, (Gfx*)(d_course_rainbow_road_dl_16220));
 }
 
-void RainbowRoad::Waypoints(Player* player, int8_t playerId) {
+void RainbowRoad::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = gCopyNearestWaypointByPlayerId[playerId];
 }
 

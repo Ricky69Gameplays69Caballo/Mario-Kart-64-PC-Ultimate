@@ -214,7 +214,7 @@ void BansheeBoardwalk::DrawTrackObjects(s32 cameraId) {
 void BansheeBoardwalk::SomeSounds() {
 }
 
-void BansheeBoardwalk::WhatDoesThisDo(Player* player, int8_t playerId) {
+void BansheeBoardwalk::WhatDoesThisDo(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x180) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1E1)) {
         if (D_80165300[playerId] != 1) {
@@ -229,7 +229,7 @@ void BansheeBoardwalk::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void BansheeBoardwalk::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void BansheeBoardwalk::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x180) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1E1)) {
         if (D_80165300[playerId] != 1) {
@@ -316,7 +316,7 @@ void BansheeBoardwalk::Tick() {
     find_and_set_tile_size((uintptr_t) LOAD_ASSET_RAW(d_course_banshee_boardwalk_dl_B278), 0, D_802B87BC);
 }
 
-void BansheeBoardwalk::Waypoints(Player* player, int8_t playerId) {
+void BansheeBoardwalk::Waypoints(Player* player, int16_t playerId) {
     s16 waypoint = gNearestPathPointByPlayerId[playerId];
     if ((waypoint >= 0x12C) && (waypoint < 0x13C)) {
         player->nearestPathPointId = 0x12CU;

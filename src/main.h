@@ -40,7 +40,12 @@
 #define MTX_EFFECT_POOL_SIZE_MAX MTX_EFFECT_POOL_SIZE + 100
 #endif
 
+#ifdef TARGET_N64
 #define GFX_POOL_SIZE 150000
+#else
+// Leave room for the expanded grid's kart, effect and HUD commands in split-screen.
+#define GFX_POOL_SIZE 600000
+#endif
 
 struct GfxPool {
     /* 0x00000 */ Mtx mtxScreen;                       // Matrix for skybox and startup logo
@@ -105,6 +110,9 @@ void thread5_game_loop(void);
 void thread5_iteration(void);
 void thread4_audio(void*);
 extern f32 gDeltaTime;
+// Experimental variable simulation duration, in 60 Hz tick units. Kept at
+// 1.0 until the remaining fixed-tick systems have been converted.
+extern f32 gNativeSimulationTickScale;
 
 extern struct VblankHandler* gVblankHandler1;
 extern struct VblankHandler* gVblankHandler2;

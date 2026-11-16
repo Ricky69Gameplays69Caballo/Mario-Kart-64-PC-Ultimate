@@ -79,7 +79,7 @@ void RaceManager::BeginPlay() {
     auto track = WorldContext.GetTrack();
 
     if (track) {
-        // Do not spawn finishline in credits or battle mode. And if bSpawnFinishline.
+        // Courses with their own gate still need the finish line position for race timing.
         if ((gGamestate != CREDITS_SEQUENCE) && (gModeSelection != BATTLE)) {
             if (track->bSpawnFinishline) {
                 if (track->FinishlineSpawnPoint.has_value()) {
@@ -89,6 +89,10 @@ void RaceManager::BeginPlay() {
                     AFinishline* finishline = AFinishline::Spawn();
                     finishline->bIsFinishline = true;
                 }
+            } else if (gCurrentTrackPath != nullptr) {
+                D_8015F8D0[0] = gCurrentTrackPath->x;
+                D_8015F8D0[1] = gCurrentTrackPath->y - 15.0f;
+                D_8015F8D0[2] = gCurrentTrackPath->z;
             }
         }
         gEditor.AddLight("Sun", nullptr, D_800DC610[1].l->l.dir);
@@ -180,6 +184,20 @@ void RaceManager::SetItemTables() {
 }
 
 static int16_t RollRaceItem(const RandomItemTable& table, uint32_t rank) {
+    if (CVarGetInteger("gCheats.ItemFilterEnabled", 0)) {
+        static const char* const itemSettings[] = {
+            "gCheats.ItemBanana", "gCheats.ItemBananaBunch", "gCheats.ItemGreenShell",
+            "gCheats.ItemTripleGreenShell", "gCheats.ItemRedShell", "gCheats.ItemTripleRedShell",
+            "gCheats.ItemBlueShell", "gCheats.ItemLightning", "gCheats.ItemFakeBox",
+            "gCheats.ItemStar", "gCheats.ItemBoo", "gCheats.ItemMushroom",
+            "gCheats.ItemDoubleMushroom", "gCheats.ItemTripleMushroom", "gCheats.ItemGoldenMushroom"
+        };
+        int16_t allowed[ITEM_MAX - 1];
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < ITEM_MAX - 1; ++i)
+            if (CVarGetInteger(itemSettings[i], 1)) allowed[count++] = static_cast<int16_t>(i + 1);
+        return count ? allowed[(static_cast<uint32_t>(random_u16()) * count) >> 16] : ITEM_NONE;
+    }
     const auto item = table.Roll(rank);
     // Keep one quarter of Lightning awards in sixteen-player mode, half of
     // the previous reduced chance. Redistribute rejected draws among other

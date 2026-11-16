@@ -1,3 +1,4 @@
+#include "port/ExtraRacers.h"
 #include "port/LocalMultiplayer.h"
 /**
  * @file render_objects.c renders hud elements
@@ -1625,7 +1626,7 @@ void render_texture_rectangle_wide(s32 x, s32 y, s32 width, s32 height, s32 arg4
             case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
                 if ((xl - (width / 2)) < (SCREEN_WIDTH / 2)) {
                     coordX = (s32) OTRGetDimensionFromLeftEdge(xl) << 2;
-                    coordX2 = (s32) (xh) << 2;
+                    coordX2 = (s32) OTRGetDimensionFromLeftEdge(xh) << 2;
                 } else {
                     coordX = (s32) OTRGetDimensionFromRightEdge(xl) << 2;
                     coordX2 = (s32) OTRGetDimensionFromRightEdge(xh) << 2;
@@ -2439,9 +2440,14 @@ void draw_simplified_lap_count(s32 playerId) {
 // Small number badges remain in use on the progress map and portrait list.
 static void draw_race_rank_digits(s32 rank, s32 x, s32 y, f32 scale) {
     const s32 number = rank + 1;
-    const s32 digits = number >= 10 ? 2 : 1;
-    for (s32 digit = 0; digit < digits; ++digit) {
-        const s32 value = digits == 2 && digit == 0 ? number / 10 : number % 10;
+    s32 digits = 1;
+    s32 divisor = 1;
+    while (number / divisor >= 10) {
+        ++digits;
+        divisor *= 10;
+    }
+    for (s32 digit = 0; digit < digits; ++digit, divisor /= 10) {
+        const s32 value = number / divisor % 10;
         func_80042330_unchanged(x + (s32)((digit * 8 - (digits - 1) * 4) * scale), y, 0U, scale);
         gSPDisplayList(gDisplayListHead++, D_0D007DB8);
         gSPDisplayList(gDisplayListHead++, D_0D007CB8);
@@ -2452,8 +2458,110 @@ static void draw_race_rank_digits(s32 rank, s32 x, s32 y, f32 scale) {
     }
 }
 
-static const char* race_place_texture(s32 rank) {
-    return rank < 8 ? common_texture_hud_place[rank] : expanded_texture_hud_place[rank - 8];
+enum {
+    ORDINAL_CELL_WIDTH = 64,
+    ORDINAL_CELL_HEIGHT = 48,
+    ORDINAL_GLYPH_COUNT = 14,
+    ORDINAL_HUD_WIDTH = 128,
+    ORDINAL_HUD_HEIGHT = 64,
+    ORDINAL_HUD_BYTES = ORDINAL_HUD_WIDTH * ORDINAL_HUD_HEIGHT / 2,
+};
+
+static u8 race_ordinal_pixel(const u8* row, s32 x) {
+    return (x & 1) ? row[x / 2] & 0xF : row[x / 2] >> 4;
+}
+
+static u8* race_place_texture(s32 rank) {
+    // Each finished label is immutable and stays at the same address so the
+    // renderer can cache it like any other HUD texture.
+    static ALIGN_ASSET(8) u8 labels[NUM_RACERS - NUM_PLAYERS][ORDINAL_HUD_BYTES];
+    static bool ready[NUM_RACERS - NUM_PLAYERS];
+    static u8 widths[ORDINAL_GLYPH_COUNT];
+
+    if (rank < NUM_PLAYERS) {
+        return (u8*) common_texture_hud_place[rank];
+    }
+    const s32 index = rank - NUM_PLAYERS;
+    u8* label = labels[index];
+    if (ready[index]) {
+        return label;
+    }
+
+    const s32 rowBytes = ORDINAL_CELL_WIDTH / 2;
+    const s32 cellBytes = ORDINAL_CELL_HEIGHT * rowBytes;
+    if (ResourceGetSizeByName(race_ordinal_atlas) != ORDINAL_GLYPH_COUNT * cellBytes) {
+        return NULL;
+    }
+    const u8* atlas = LOAD_ASSET_RAW(race_ordinal_atlas);
+    if (atlas == NULL) {
+        return NULL;
+    }
+    if (widths[0] == 0) {
+        for (s32 glyph = 0; glyph < ORDINAL_GLYPH_COUNT; ++glyph) {
+            const u8* cell = atlas + glyph * cellBytes;
+            for (s32 y = 0; y < ORDINAL_CELL_HEIGHT; ++y) {
+                const u8* row = cell + y * rowBytes;
+                for (s32 x = ORDINAL_CELL_WIDTH - 1; x >= widths[glyph]; --x) {
+                    if (race_ordinal_pixel(row, x) != 0) {
+                        widths[glyph] = x + 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    const s32 number = rank + 1;
+    const s32 lastDigit = number % 10;
+    const s32 lastTwo = number % 100;
+    s32 glyphs[5];
+    s32 count = 0;
+    if (number >= 1000) {
+        glyphs[count++] = number / 1000;
+    }
+    if (number >= 100) {
+        glyphs[count++] = number / 100 % 10;
+    }
+    if (number >= 10) {
+        glyphs[count++] = number / 10 % 10;
+    }
+    glyphs[count++] = lastDigit;
+    // Atlas cells 10 through 13 contain st, nd, rd, and th.
+    glyphs[count++] = (lastTwo >= 11 && lastTwo <= 13) || lastDigit < 1 || lastDigit > 3
+        ? 13 : 9 + lastDigit;
+
+    const s32 gap = 2;
+    const s32 left = 4;
+    const s32 top = 8;
+    s32 textWidth = (count - 1) * gap;
+    for (s32 i = 0; i < count; ++i) {
+        if (widths[glyphs[i]] == 0) {
+            return NULL;
+        }
+        textWidth += widths[glyphs[i]];
+    }
+    const s32 availableWidth = ORDINAL_HUD_WIDTH - left * 2;
+    const s32 drawWidth = textWidth < availableWidth ? textWidth : availableWidth;
+    s32 offset = 0;
+    for (s32 i = 0; i < count; ++i) {
+        const s32 glyph = glyphs[i];
+        const s32 width = widths[glyph];
+        const u8* cell = atlas + glyph * cellBytes;
+        const s32 x0 = offset * drawWidth / textWidth;
+        const s32 x1 = (offset + width) * drawWidth / textWidth;
+        for (s32 y = 0; y < ORDINAL_CELL_HEIGHT; ++y) {
+            const u8* row = cell + y * rowBytes;
+            u8* dest = label + (top + y) * (ORDINAL_HUD_WIDTH / 2);
+            for (s32 x = x0; x < x1; ++x) {
+                const u8 pixel = race_ordinal_pixel(row, (x - x0) * width / (x1 - x0));
+                const s32 column = left + x;
+                dest[column / 2] |= (column & 1) ? pixel : pixel << 4;
+            }
+        }
+        offset += width + gap;
+    }
+    ready[index] = true;
+    return label;
 }
 
 static s32 race_place_green(s32 rank) {
@@ -2464,24 +2572,23 @@ static s32 race_place_green(s32 rank) {
 void func_8004E800(s32 playerId) {
     const s32 rank = gGPCurrentRaceRankByPlayerId[playerId];
     if (rank < 0 || rank >= NUM_RACERS) return;
-    FrameInterpolation_RecordOpenChild("Player place HUD", playerId);
-    if (playerHUD[playerId].unk_81 != 0) {
-        if (playerHUD[playerId].lapCount != 3) {
-            s32 displayRank = D_8018CF98[playerId];
-            if (displayRank < 0 || displayRank >= NUM_RACERS) displayRank = rank;
-            func_8004A384(playerHUD[playerId].rankX + playerHUD[playerId].slideRankX,
-                          playerHUD[playerId].rankY + playerHUD[playerId].slideRankY, 0U,
-                          playerHUD[playerId].rankScaling, 0x000000FF, race_place_green(displayRank), 0, 0x000000FF,
-                          (u8*) race_place_texture(displayRank), D_0D0068F0, 0x00000080, 0x00000040,
-                          0x00000080, 0x00000040);
-        } else {
-            func_8004A384(playerHUD[playerId].rankX + playerHUD[playerId].slideRankX,
-                          playerHUD[playerId].rankY + playerHUD[playerId].slideRankY, 0U,
-                          playerHUD[playerId].rankScaling, 0x000000FF, D_800E55F8[D_80165594], 0, 0x000000FF,
-                          (u8*) race_place_texture(rank), D_0D0068F0,
-                          0x00000080, 0x00000040, 0x00000080, 0x00000040);
-        }
+    if (playerHUD[playerId].unk_81 == 0) return;
+
+    const bool finished = playerHUD[playerId].lapCount == 3;
+    s32 displayRank = finished ? rank : D_8018CF98[playerId];
+    if (displayRank < 0 || displayRank >= NUM_RACERS) displayRank = rank;
+    const s32 x = playerHUD[playerId].rankX + playerHUD[playerId].slideRankX;
+    const s32 y = playerHUD[playerId].rankY + playerHUD[playerId].slideRankY;
+    const f32 scale = playerHUD[playerId].rankScaling;
+    u8* texture = race_place_texture(displayRank);
+    if (texture == NULL) {
+        draw_race_rank_digits(displayRank, OTRGetDimensionFromLeftEdge(x), y, 2.0f * scale);
+        return;
     }
+
+    FrameInterpolation_RecordOpenChild("Player place HUD", playerId);
+    const s32 green = finished ? D_800E55F8[D_80165594] : race_place_green(displayRank);
+    func_8004A384(x, y, 0U, scale, 255, green, 0, 255, texture, D_0D0068F0, 128, 64, 128, 64);
     FrameInterpolation_RecordCloseChild();
 }
 
@@ -2511,10 +2618,16 @@ void draw_expanded_race_position(s32 playerId, s32 rank, s32 x, s32 y, f32 scale
     // the middle column's number outside its viewport in widescreen windows.
     const f32 uiLeft = OTRGetDimensionFromLeftEdge(0);
     const f32 uiWidth = OTRGetDimensionFromRightEdge(SCREEN_WIDTH) - uiLeft;
+    u8* texture = race_place_texture(rank);
+    if (texture == NULL) {
+        draw_race_rank_digits(rank, (s32)(uiLeft + x * uiWidth / SCREEN_WIDTH), y, 2.0f * scale);
+        FrameInterpolation_RecordCloseChild();
+        return;
+    }
     func_80042330_unchanged((s32) (uiLeft + x * uiWidth / SCREEN_WIDTH), y, 0U, scale);
     gSPDisplayList(gDisplayListHead++, D_0D007A60);
     func_8004B414(255, race_place_green(rank), 0, 255);
-    func_80049970((u8*) race_place_texture(rank), D_0D0068F0, 128, 64, 128, 64);
+    func_80049970(texture, D_0D0068F0, 128, 64, 128, 64);
     FrameInterpolation_RecordCloseChild();
 }
 
@@ -2560,9 +2673,15 @@ void func_8004E998(s32 playerId) {
     if (rank < 0 || rank >= NUM_RACERS) return;
     if (playerHUD[playerId].unk_81 != 0) {
         // The compact multiplayer font/color tables contain only places 1-4.
-        // GP can now put human racers in 5-16: use the full place assets
+        // Use the full place artwork for 5th and beyond
         // at the same height instead of indexing past either compact table.
         const bool fullPlaceTexture = rank >= 4;
+        u8* texture = fullPlaceTexture ? race_place_texture(rank) : (u8*) D_0D015258[rank];
+        if (texture == NULL) {
+            draw_race_rank_digits(rank, OTRGetDimensionFromLeftEdge(playerHUD[playerId].rankX + playerHUD[playerId].slideRankX),
+                                 playerHUD[playerId].rankY + playerHUD[playerId].slideRankY, 2.0f * playerHUD[playerId].rankScaling);
+            return;
+        }
         s32 colorIndex = playerHUD[playerId].lapCount != 3 ? rank : D_80165598;
         if (colorIndex < 0 || colorIndex >= (fullPlaceTexture ? NUM_RACERS : 4)) {
             colorIndex = rank;
@@ -2573,7 +2692,7 @@ void func_8004E998(s32 playerId) {
                       playerHUD[playerId].rankY + playerHUD[playerId].slideRankY, 0U,
                       playerHUD[playerId].rankScaling, 0x000000FF,
                       fullPlaceTexture ? race_place_green(colorIndex) : D_800E5618[colorIndex], 0, 0x000000FF,
-                      (u8*) (fullPlaceTexture ? race_place_texture(rank) : D_0D015258[rank]),
+                      texture,
                       fullPlaceTexture ? D_0D0068F0 : D_0D006030, textureWidth, 64, textureWidth, 64);
         FrameInterpolation_RecordCloseChild();
     }
@@ -2748,7 +2867,15 @@ char* common_texture_minimap_progress[] = {
 /**
  * characterId of 8 appears to be a type of null check or control flow alteration.
  */
-void draw_minimap_character(s32 arg0, s32 playerId, s32 characterId) {
+static void finish_minimap_rectangles(const u8** batchTexture) {
+    if (batchTexture && *batchTexture) {
+        gSPDisplayList(gDisplayListHead++, D_0D007EB8);
+        gDPSetTextureFilter(gDisplayListHead++, G_TF_BILERP);
+        *batchTexture = NULL;
+    }
+}
+
+static void draw_minimap_character_batched(s32 arg0, s32 playerId, s32 characterId, const u8** batchTexture) {
     f32 thing0;
     f32 thing1;
     s16 x;
@@ -2771,6 +2898,7 @@ void draw_minimap_character(s32 arg0, s32 playerId, s32 characterId) {
         y = (CM_GetProps()->Minimap.Pos[arg0].Y - (CM_GetProps()->Minimap.Height / 2)) +
             CM_GetProps()->Minimap.PlayerY + (s16) (thing1);
         if (characterId != 8) {
+            finish_minimap_rectangles(batchTexture);
             FrameInterpolation_RecordOpenChild("minimap_dots", TAG_MINIMAP_DOTS( ((arg0 & 0x1) << 7) | ((playerId & 0xF) << 3) | (characterId & 0x7) ));
             if ((gGPCurrentRaceRankByPlayerId[playerId] == 0) && (gModeSelection != 3) && (gModeSelection != 1)) {
                 func_80046424(x, y, player->rotation[1] + 0x8000, 1.0f,
@@ -2785,13 +2913,31 @@ void draw_minimap_character(s32 arg0, s32 playerId, s32 characterId) {
         } else {
             FrameInterpolation_RecordOpenChild("minimap_dots2", TAG_MINIMAP_DOTS( ((arg0 & 0x1) << 7) | ((playerId & 0xF) << 3) | (characterId & 0x7) ));
             if (gGPCurrentRaceRankByPlayerId[playerId] == 0) {
+                finish_minimap_rectangles(batchTexture);
                 func_8004C450(x, y, 8, 8, (u8*) common_texture_minimap_progress[player->characterId]);
+            } else if (batchTexture) {
+                const u8* texture = (const u8*) common_texture_minimap_progress[player->characterId];
+                if (*batchTexture == NULL) {
+                    gSPDisplayList(gDisplayListHead++, D_0D008108);
+                    gSPDisplayList(gDisplayListHead++, D_0D007EF8);
+                    gDPSetTextureFilter(gDisplayListHead++, G_TF_POINT);
+                    gDPSetAlphaCompare(gDisplayListHead++, G_AC_THRESHOLD);
+                }
+                if (*batchTexture != texture) {
+                    load_texture_block_rgba16_mirror((u8*) texture, 8, 8);
+                    *batchTexture = texture;
+                }
+                func_8004B97C_wide(x - 4, y - 4, 8, 8, 0);
             } else {
                 draw_hud_2d_texture_wide(x, y, 8, 8, (u8*) common_texture_minimap_progress[player->characterId]);
             }
             FrameInterpolation_RecordCloseChild();
         }
     }
+}
+
+void draw_minimap_character(s32 arg0, s32 playerId, s32 characterId) {
+    draw_minimap_character_batched(arg0, playerId, characterId, NULL);
 }
 #else
 GLOBAL_ASM("asm/non_matchings/render_objects/draw_minimap_character.s")
@@ -2803,17 +2949,29 @@ static s32 expanded_hud_x(f32 x) {
     return (s32) (left + x * width / SCREEN_WIDTH);
 }
 
-static void draw_minimap_marker(s32 x, s32 y, u16 rotation, f32 scale, u8* texture, bool highlight, s32 alpha) {
+static void draw_minimap_marker(s32 x, s32 y, u16 rotation, f32 scale, u8* texture, bool highlight, s32 alpha,
+                                u8** batchTexture) {
     func_80042330_unchanged(x, y, rotation, scale);
-    gSPDisplayList(gDisplayListHead++, highlight ? D_0D007968 : D_0D007928);
-    gDPPipeSync(gDisplayListHead++);
-    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
-    gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER | G_CULL_FRONT | G_CULL_BACK);
-    gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
-    gDPSetRenderMode(gDisplayListHead++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
-    if (highlight) func_8004B614(D_801656C0, D_801656D0, D_801656E0, 128, 128, 128, alpha);
-    else set_transparency(alpha);
-    func_80045D0C(texture, (Vtx*) LOAD_ASSET(common_vtx_player_minimap_icon), 8, 8, 8);
+    if (!batchTexture || !*batchTexture || highlight) {
+        gSPDisplayList(gDisplayListHead++, highlight ? D_0D007968 : D_0D007928);
+        gDPPipeSync(gDisplayListHead++);
+        gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+        gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER | G_CULL_FRONT | G_CULL_BACK);
+        gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
+        gDPSetRenderMode(gDisplayListHead++, G_RM_XLU_SURF, G_RM_XLU_SURF2);
+        if (highlight) func_8004B614(D_801656C0, D_801656D0, D_801656E0, 128, 128, 128, alpha);
+        else set_transparency(alpha);
+    }
+    Vtx* vertices = (Vtx*) LOAD_ASSET(common_vtx_player_minimap_icon);
+    if (batchTexture && !highlight) {
+        if (*batchTexture != texture) {
+            load_texture_block_rgba16_mirror(texture, 8, 8);
+            *batchTexture = texture;
+        }
+        func_80045B2C(vertices);
+    } else {
+        func_80045D0C(texture, vertices, 8, 8, 8);
+    }
 }
 
 static void draw_scaled_minimap(s32 viewer, s32 count, const s32* order, s32 x, s32 y,
@@ -2827,8 +2985,8 @@ static void draw_scaled_minimap(s32 viewer, s32 count, const s32* order, s32 x, 
     const s32 width = map->Width, height = map->Height;
     // Track::ResizeMinimap changes the display dimensions to the native map
     // coordinate system. Texture sampling must still cover the entire asset.
-    const s32 textureWidth = ResourceGetTexWidthByName(map->Texture);
-    const s32 textureHeight = ResourceGetTexHeightByName(map->Texture);
+    const s32 textureWidth = map->RawTexture ? width : ResourceGetTexWidthByName(map->Texture);
+    const s32 textureHeight = map->RawTexture ? height : ResourceGetTexHeightByName(map->Texture);
     if (textureWidth <= 0 || textureHeight <= 0) return;
     f32 scale = (f32) maxWidth / width;
     if (scale > (f32) maxHeight / height) scale = (f32) maxHeight / height;
@@ -2857,7 +3015,7 @@ static void draw_scaled_minimap(s32 viewer, s32 count, const s32* order, s32 x, 
     // Our quad already uses the actual image UVs, so use full scale here or
     // only its upper-left quarter is stretched across the entire minimap.
     gSPTexture(gDisplayListHead++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
-    gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER | G_CULL_FRONT | G_CULL_BACK);
+    gSPClearGeometryMode(gDisplayListHead++, G_ZBUFFER | G_CULL_FRONT | G_CULL_BACK | G_FOG | G_LIGHTING);
     gDPSetTextureLUT(gDisplayListHead++, G_TT_NONE);
     gDPPipeSync(gDisplayListHead++);
     gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
@@ -2872,9 +3030,12 @@ static void draw_scaled_minimap(s32 viewer, s32 count, const s32* order, s32 x, 
     if (gModeSelection != BATTLE) {
         draw_minimap_marker((s32) (left + (map->PlayerX + map->FinishlineX) * scale),
                             (s32) (top + (map->PlayerY + map->FinishlineY) * scale),
-                            0U, markerScale, (u8*) common_texture_minimap_finish_line, false, alpha);
+                            0U, markerScale, (u8*) common_texture_minimap_finish_line, false, alpha, NULL);
     }
     // Draw the viewing player last, so their marker stays visible in a pack.
+    const bool batch = gGamestate == RACING && count >= LARGE_GRID_OPTIMIZATION_MIN_RACERS &&
+                       CVarGetInteger(CVAR_LARGE_GRID_MINIMAP, 0);
+    u8* batchTexture = NULL;
     for (s32 pass = 0; pass < 2; ++pass) {
         for (s32 rank = count - 1; rank >= 0; --rank) {
             const s32 playerId = order[rank];
@@ -2891,7 +3052,7 @@ static void draw_scaled_minimap(s32 viewer, s32 count, const s32* order, s32 x, 
             draw_minimap_marker(markerX, markerY, cpu ? 0 : player->rotation[1] + 0x8000,
                                 iconScale, (u8*) (cpu ? common_texture_minimap_progress[player->characterId] :
                                                        common_texture_minimap_kart_character[player->characterId]),
-                                highlight, alpha);
+                                highlight, alpha, batch && !highlight ? &batchTexture : NULL);
             FrameInterpolation_RecordCloseChild();
         }
     }
@@ -2949,7 +3110,7 @@ void draw_expanded_race_progress(s32 viewer, s32 count, const s32* order, s32 x,
             gSPDisplayList(gDisplayListHead++, D_0D007DB8);
             set_transparency(255);
             gDPLoadTLUT_pal256(gDisplayListHead++, gPortraitTLUTs[character]);
-            rsp_load_texture(gPortraitTextures[character], 32, 32);
+            rsp_load_texture((u8*)ExtraRacers_HudPortrait(playerId, (const char*)gPortraitTextures[character]), 32, 32);
             gSPDisplayList(gDisplayListHead++, D_0D0069E0);
             if (playerId == viewer) {
                 gSPDisplayList(gDisplayListHead++, D_0D007A60);
@@ -2973,10 +3134,17 @@ void func_8004F3E4(s32 arg0) {
         if (LocalMP_Count() > 1) return;
         // Reuse the ordinary 1P map coordinates, with every CPU marker.
         // Draw the human last so repeated characters cannot obscure it.
-        for (s32 rank = LocalMP_RacerCount() - 1; rank >= 0; --rank) {
+        const s32 racers = LocalMP_RacerCount();
+        const bool batch = gGamestate == RACING && racers >= LARGE_GRID_OPTIMIZATION_MIN_RACERS &&
+                           CVarGetInteger(CVAR_LARGE_GRID_MINIMAP, 0);
+        const u8* batchTexture = NULL;
+        for (s32 rank = racers - 1; rank >= 0; --rank) {
             const s32 racer = gGPCurrentRacePlayerIdByRank[rank];
-            if (racer != 0) draw_minimap_character(arg0, racer, 8);
+            if (racer > 0 && racer < racers) {
+                draw_minimap_character_batched(arg0, racer, 8, batch ? &batchTexture : NULL);
+            }
         }
+        finish_minimap_rectangles(&batchTexture);
         draw_minimap_character(arg0, 0, gPlayerOne->characterId);
         return;
     }
@@ -3175,7 +3343,7 @@ void func_8004FDB4(f32 arg0, f32 arg1, s16 arg2, s16 arg3, s16 characterId, s32 
         gSPDisplayList(gDisplayListHead++, D_0D007DB8);
         func_8004B35C(0x000000FF, 0x000000FF, 0x000000FF, arg5);
         gDPLoadTLUT_pal256(gDisplayListHead++, gPortraitTLUTs[characterId]);
-        rsp_load_texture(gPortraitTextures[characterId], 0x00000020, 0x00000020);
+        rsp_load_texture((u8*)ExtraRacers_HudPortrait(gGPCurrentRacePlayerIdByRank[arg2], (const char*)gPortraitTextures[characterId]), 32, 32);
         if (arg7 != 0) {
             gSPDisplayList(gDisplayListHead++, D_0D0069F8);
         } else {
@@ -3204,6 +3372,23 @@ void func_8004FDB4(f32 arg0, f32 arg1, s16 arg2, s16 arg3, s16 characterId, s32 
 
 void func_80050320(void) {
     if (LocalMP_IsActive() && LocalMP_Count() > 1 && LocalMP_RacerCount() > NUM_PLAYERS) return;
+    // The native animated four-racer panel moves off-screen while cycling
+    // through only eight entries. Use a stable top-four panel for expanded
+    // single-player grids so the portraits and ranks remain visible.
+    if (LocalMP_IsActive() && LocalMP_Count() == 1 && LocalMP_RacerCount() > NUM_PLAYERS) {
+        for (s32 rank = 0; rank < 4 && rank < LocalMP_RacerCount(); ++rank) {
+            const s32 racer = gGPCurrentRacePlayerIdByRank[rank];
+            if (racer < 0 || racer >= LocalMP_RacerCount()) continue;
+            const s16 character = gPlayers[racer].characterId;
+            if (character < 0 || character >= NUM_PLAYERS) continue;
+            FrameInterpolation_RecordOpenChild("expanded_ranking_portraits", rank);
+            func_8004FDB4(20.0f, 30.0f + rank * 34.0f, rank,
+                          gLapCountByPlayerId[racer], character, 0xFF, racer == 0, 0, 1);
+            FrameInterpolation_RecordCloseChild();
+        }
+        gSPTexture(gDisplayListHead++, 0x0001, 0x0001, 0, G_TX_RENDERTILE, G_OFF);
+        return;
+    }
     s16 temp_v0;
     s16 characterId;
     s32 i;
@@ -3480,7 +3665,7 @@ void func_80050E34(s32 playerId, s32 arg1) {
         } else {
             set_transparency((s32) gObjectList[objectIndex].primAlpha);
         }
-        rsp_load_texture(gPortraitTextures[characterId], 0x00000020, 0x00000020);
+        rsp_load_texture((u8*)ExtraRacers_HudPortrait(playerId, (const char*)gPortraitTextures[characterId]), 32, 32);
         object = &gObjectList[objectIndex];
         object->pos[0] = object->offset[0] + ((f32) (spD0 + 0x20));
         object->pos[1] = object->offset[1] + ((f32) (spC4 + spCC));

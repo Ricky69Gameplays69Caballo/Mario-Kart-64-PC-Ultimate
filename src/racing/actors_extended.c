@@ -905,6 +905,8 @@ void use_thunder_item(Player* player) {
     s32 index;
     Player* otherPlayer;
 
+    Diagnostics_RecordLightningUse((int)(player - gPlayerOne));
+
     func_8009E5BC();
     if ((player->type & PLAYER_HUMAN) != 0) {
         // Play sound.

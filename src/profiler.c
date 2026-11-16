@@ -29,6 +29,19 @@ void profiler_log_thread4_time(void) {
     }
 }
 
+bool profiler_get_last_game_frame_ms(double* simulation, double* displayList, double* graphics) {
+    const OSTime* times = gProfilerFrameData[D_800DC668 ^ 1].gameTimes;
+    if (!times[THREAD5_START] || times[LEVEL_SCRIPT_EXECUTE] < times[THREAD5_START] ||
+        times[BEFORE_DISPLAY_LISTS] < times[LEVEL_SCRIPT_EXECUTE] ||
+        times[AFTER_DISPLAY_LISTS] < times[BEFORE_DISPLAY_LISTS]) {
+        return false;
+    }
+    *simulation = (times[LEVEL_SCRIPT_EXECUTE] - times[THREAD5_START]) / 46875.0;
+    *displayList = (times[BEFORE_DISPLAY_LISTS] - times[LEVEL_SCRIPT_EXECUTE]) / 46875.0;
+    *graphics = (times[AFTER_DISPLAY_LISTS] - times[BEFORE_DISPLAY_LISTS]) / 46875.0;
+    return true;
+}
+
 void profiler_log_gfx_time(enum ProfilerGfxEvent eventID) {
     if (eventID == TASKS_QUEUED) {
         D_800DC66C ^= 1;

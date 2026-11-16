@@ -5,6 +5,7 @@
 #include "Finishline.h"
 #include "engine/Actor.h"
 #include "engine/World.h"
+#include "engine/tracks/Track.h"
 #include "assets/models/common_data.h"
 #include "src/port/Game.h"
 #include "port/interpolation/FrameInterpolation.h"
@@ -79,6 +80,46 @@ void AFinishline::Draw(Camera *camera) {
 
     maxObjectsReached = render_set_position(mtx, 0) == 0;
     if (maxObjectsReached) {
+        FrameInterpolation_RecordCloseChild();
+        return;
+    }
+
+    // The mod supplies its own banner palette and eight tiles. Keep the
+    // stock geometry and posts, except for Secret Slide's wall-hung banner.
+    Track* track = GetWorld()->GetTrack();
+    const bool amped = track && track->ResourceName.rfind("amped:course_", 0) == 0 &&
+                       track->ResourceName != "amped:course_08";
+    const bool wallHung = amped && track->ResourceName == "amped:course_11";
+    if (amped) {
+        const bool front = temp < camera->pos[2];
+        const char* model = front ? (bFog ? D_0D001C20 : D_0D001B90)
+                                  : (bFog ? D_0D001C88 : D_0D001BD8);
+        if (bFog) {
+            gDPSetFogColor(gDisplayListHead++, gFogColour.r, gFogColour.g, gFogColour.b, 0xFF);
+        }
+        const Gfx* commands = (const Gfx*)LOAD_ASSET_RAW(model);
+        if (commands) {
+            const int post = bFog ? (front ? 8 : 5) : (front ? 6 : 3);
+            const int banner = front ? (bFog ? 5 : 3) : -1;
+            const int count = bFog ? (front ? 12 : 11) : 8;
+            for (int i = 0; i < count; ++i) {
+                if (i == post) {
+                    if (!wallHung) {
+                        // The stock post geometry is single-sided; Amped's banner
+                        // can be approached from either side of the start line.
+                        gSPClearGeometryMode(gDisplayListHead++, G_CULL_BOTH);
+                        gSPDisplayList(gDisplayListHead++, (Gfx*) common_model_finish_post);
+                        gSPSetGeometryMode(gDisplayListHead++, G_CULL_BACK);
+                    }
+                    continue;
+                }
+                if (i == banner) {
+                    gSPDisplayList(gDisplayListHead++, (Gfx*) "__OTR__tracks/amped_11/obj_amped_start_banner");
+                } else {
+                    *gDisplayListHead++ = commands[i];
+                }
+            }
+        }
         FrameInterpolation_RecordCloseChild();
         return;
     }

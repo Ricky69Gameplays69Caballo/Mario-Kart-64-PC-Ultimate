@@ -275,4 +275,11 @@ void RegisterActors(Registry<ActorInfo, const SpawnParams&>& r) {
 
     info = { .ResourceName = "mk:bowser_statue", .Name = "Bowser Statue" };
     r.Add(info, AddActorToWorld<ABowserStatue>);
+
+    info = { .ResourceName = "amped:super_mushroom_box", .Name = "Super Mushroom Box" };
+    r.Add(info, [](const SpawnParams& params) {
+        FVector loc = params.Location.value_or(FVector{ 0, 0, 0 });
+        Vec3f pos = { loc.x, loc.y, loc.z };
+        spawn_fixed_item_box(pos, ITEM_SUPER_MUSHROOM);
+    });
 }

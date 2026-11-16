@@ -199,7 +199,7 @@ void FrappeSnowland::DrawCredits() {
     gSPDisplayList(gDisplayListHead++, (Gfx*)(d_course_frappe_snowland_dl_76A0));
 }
 
-void FrappeSnowland::Waypoints(Player* player, int8_t playerId) {
+void FrappeSnowland::Waypoints(Player* player, int16_t playerId) {
     s16 waypoint = gNearestPathPointByPlayerId[playerId];
 
     if ((waypoint >= 0xF0) && (waypoint < 0x105)) {

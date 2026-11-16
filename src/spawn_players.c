@@ -80,10 +80,9 @@ s16 D_80165580;
 s16 D_80165582;
 
 // arg4 is height? Or something like that?
-void spawn_player(Player* player, s8 playerIndex, f32 startingRow, f32 startingColumn, f32 arg4, f32 arg5,
+void spawn_player(Player* player, s16 playerIndex, f32 startingRow, f32 startingColumn, f32 arg4, f32 arg5,
                   u16 characterId, s32 playerType) {
     f32 ret;
-    s8 idx;
 
     player->type = PLAYER_INACTIVE;
     player->kartPropulsionStrength = 0;
@@ -117,7 +116,8 @@ void spawn_player(Player* player, s8 playerIndex, f32 startingRow, f32 startingC
             player->topSpeed = gTopSpeedTable[CC_BATTLE][player->characterId];
             break;
     }
-    if (CVarGetInteger("gEnableCustomCC", 0) == 1) {
+    if ((gRace200cc && gModeSelection != BATTLE) ||
+        gRaceCustomCC) {
 #define calc_a(x, y, x2, y2) (y2 - y) / (x2 - x)
 #define calc_b(x, y, b) y - (b * x)
         f32 a;
@@ -126,7 +126,7 @@ void spawn_player(Player* player, s8 playerIndex, f32 startingRow, f32 startingC
 #define calc(table, field)                                                                      \
     a = calc_a(50, table[CC_50][player->characterId], 150, table[CC_150][player->characterId]); \
     b = calc_b(50, table[CC_50][player->characterId], a);                                       \
-    player->field = a * CVarGetFloat("gCustomCC", 150.0f) + b;
+    player->field = a * (gRace200cc && gModeSelection != BATTLE ? 200.0f : CVarGetFloat("gCustomCC", 150.0f)) + b;
 
         calc(gTopSpeedTable, topSpeed);
         calc(D_800E2400, unk_084);
@@ -284,40 +284,39 @@ void spawn_player(Player* player, s8 playerIndex, f32 startingRow, f32 startingC
     player->unk_230 = 0.0f;
     player->unk_23C = 0.0f;
 
-    idx = playerIndex;
 
     for (s32 view = 0; view < MAX_HUMAN_PLAYERS; view++) {
         player->unk_048[view] = player->unk_050[view] = 0;
         player->unk_0CC[view] = player->unk_0D4[view] = 0;
         player->animFrameSelector[view] = player->animGroupSelector[view] = 0;
-        gLastAnimFrameSelector[view][idx] = gLastAnimGroupSelector[view][idx] = 0;
-        D_80165190[view][idx] = D_801651D0[view][idx] = D_80165150[view][idx] = 0;
+        gLastAnimFrameSelector[view][playerIndex] = gLastAnimGroupSelector[view][playerIndex] = 0;
+        D_80165190[view][playerIndex] = D_801651D0[view][playerIndex] = D_80165150[view][playerIndex] = 0;
     }
 
-    gLastAnimFrameSelector[0][idx] = 0;
-    gLastAnimFrameSelector[1][idx] = 0;
-    gLastAnimFrameSelector[2][idx] = 0;
-    gLastAnimFrameSelector[3][idx] = 0;
-    gLastAnimGroupSelector[0][idx] = 0;
-    gLastAnimGroupSelector[1][idx] = 0;
-    gLastAnimGroupSelector[2][idx] = 0;
-    gLastAnimGroupSelector[3][idx] = 0;
-    D_80165190[0][idx] = 0;
-    D_80165190[1][idx] = 0;
-    D_80165190[2][idx] = 0;
-    D_80165190[3][idx] = 0;
-    D_801651D0[0][idx] = 0;
-    D_801651D0[1][idx] = 0;
-    D_801651D0[2][idx] = 0;
-    D_801651D0[3][idx] = 0;
+    gLastAnimFrameSelector[0][playerIndex] = 0;
+    gLastAnimFrameSelector[1][playerIndex] = 0;
+    gLastAnimFrameSelector[2][playerIndex] = 0;
+    gLastAnimFrameSelector[3][playerIndex] = 0;
+    gLastAnimGroupSelector[0][playerIndex] = 0;
+    gLastAnimGroupSelector[1][playerIndex] = 0;
+    gLastAnimGroupSelector[2][playerIndex] = 0;
+    gLastAnimGroupSelector[3][playerIndex] = 0;
+    D_80165190[0][playerIndex] = 0;
+    D_80165190[1][playerIndex] = 0;
+    D_80165190[2][playerIndex] = 0;
+    D_80165190[3][playerIndex] = 0;
+    D_801651D0[0][playerIndex] = 0;
+    D_801651D0[1][playerIndex] = 0;
+    D_801651D0[2][playerIndex] = 0;
+    D_801651D0[3][playerIndex] = 0;
 
-    gFrameSinceLastACombo[idx] = 0;
-    gCountASwitch[idx] = 0;
-    gIsPlayerTripleAButtonCombo[idx] = false;
-    gTimerBoostTripleACombo[idx] = 0;
-    gFrameSinceLastBCombo[idx] = 0;
-    gCountBChangement[idx] = 0;
-    gIsPlayerTripleBButtonCombo[idx] = false;
+    gFrameSinceLastACombo[playerIndex] = 0;
+    gCountASwitch[playerIndex] = 0;
+    gIsPlayerTripleAButtonCombo[playerIndex] = false;
+    gTimerBoostTripleACombo[playerIndex] = 0;
+    gFrameSinceLastBCombo[playerIndex] = 0;
+    gCountBChangement[playerIndex] = 0;
+    gIsPlayerTripleBButtonCombo[playerIndex] = false;
     gTimerBoostTripleBCombo[playerIndex] = 0;
     D_8018D900[0] = 0;
 
@@ -996,6 +995,38 @@ static f32 big_donut_clear_spawn_offset(s32 playerIndex, f32 radius, f32 offset,
     return offset;
 }
 
+// A long grid follows the track behind the finish line, including around bends.
+static f32 extended_grid_path_length(void) {
+    const TrackPathPoint* path = gTrackPaths[0];
+    f32 distance = 0.0f;
+    for (s32 front = 0, back = gPathCountByPathIndex[0] - 1; back > 0; front = back--) {
+        const f32 dx = path[front].x - path[back].x;
+        const f32 dz = path[front].z - path[back].z;
+        distance += sqrtf(dx * dx + dz * dz);
+    }
+    return distance;
+}
+
+static void extended_grid_position(f32 distance, f32 lane, Vec3f position, s16* yaw) {
+    const TrackPathPoint* path = gTrackPaths[0];
+    const s32 count = gPathCountByPathIndex[0];
+    for (s32 front = 0, back = count - 1; back > 0; front = back--) {
+        const f32 dx = path[front].x - path[back].x;
+        const f32 dz = path[front].z - path[back].z;
+        const f32 length = sqrtf(dx * dx + dz * dz);
+        if (length <= 0.0f) continue;
+        if (distance <= length || back == 1) {
+            const f32 fraction = MIN(distance / length, 1.0f);
+            position[0] = path[front].x - fraction * dx - lane * dz / length;
+            position[1] = path[front].y + fraction * (path[back].y - path[front].y);
+            position[2] = path[front].z - fraction * dz + lane * dx / length;
+            *yaw = -(s16) atan2s(dx, dz);
+            return;
+        }
+        distance -= length;
+    }
+}
+
 void spawn_and_set_player_spawns(void) {
     s16 sp5E;
     s16 sp5C;
@@ -1043,15 +1074,45 @@ void spawn_and_set_player_spawns(void) {
             func_80039AE4();
             return; // Arenas have no race paths to initialize.
         }
-        for (s32 i = 0; i < NUM_RACERS; i++) {
-            s32 grid = i < LocalMP_RacerCount() ? gGPCurrentRaceRankByPlayerId[i] : i;
+        const s32 raceCount = LocalMP_RacerCount();
+        // Prefer rows along the course. Add lanes only when another row would
+        // approach the start line after wrapping around the course.
+        const f32 pathLength = raceCount > 16 ? extended_grid_path_length() : 0.0f;
+        const f32 usableLength = MAX(pathLength - 150.0f, 40.0f);
+        const s32 rowsAvailable = MAX(1, (s32)(usableLength / 40.0f));
+        const s32 columns = raceCount > 16 ? MIN(MAX((raceCount + rowsAvailable - 1) / rowsAvailable, 2), 5) :
+                                             MIN((raceCount + 7) / 8, 5);
+        f32 gridSpacing = 1.0f;
+        if (raceCount > 16) {
+            const s32 last = raceCount - 1;
+            const f32 gridLength = (last / columns) * 40.0f + (last % columns) * 8.0f;
+            // Leave clearance at both ends of the grid so the final rows never stack at the path limit.
+            if (pathLength > 60.0f && gridLength > pathLength - 60.0f) {
+                gridSpacing = (pathLength - 60.0f) / gridLength;
+            }
+        }
+        for (s32 i = 0; i < MAX(raceCount, NUM_PLAYERS); i++) {
+            s32 grid = i < raceCount ? gGPCurrentRaceRankByPlayerId[i] : i;
             if (grid < 0 || grid >= LocalMP_RacerCount()) grid = i;
             D_80165270[i] = grid;
             f32 x = sp5E + ((grid & 1) ? -20.0f : 20.0f);
             f32 z = sp5C + 30.0f + 20.0f * grid;
+            f32 y = sp5A;
+            s16 yaw = (s16) 0x8000;
+            if (columns > 2 || raceCount > 16) {
+                const s32 column = grid % columns;
+                const s32 row = grid / columns;
+                const f32 lane = (column - (columns - 1) * 0.5f) * (columns == 5 ? 20.0f : 26.0f);
+                const f32 distance = 30.0f + (row * 40.0f + column * 8.0f) * gridSpacing;
+                Vec3f position = { sp5E + lane, y, sp5C + distance };
+                if (raceCount > 16 && pathLength > 60.0f) extended_grid_position(distance, lane, position, &yaw);
+                x = position[0];
+                y = position[1];
+                z = position[2];
+            }
             D_80165210[i] = x;
             D_80165230[i] = z;
-            spawn_player(&gPlayers[i], i, x, z, sp5A, 32768.0f, gCharacterSelections[i],
+            spawn_player(&gPlayers[i], i, x, z, y, yaw, gCharacterSelections[i],
                          i < LocalMP_RacerCount() ? PLAYER_EXISTS | PLAYER_START_SEQUENCE |
                          (i < LocalMP_Count() ? PLAYER_HUMAN : PLAYER_CPU) : 0);
         }
@@ -1321,7 +1382,7 @@ void func_8003CD78(void) {
     func_8003BE30();
 }
 
-void func_8003CD98(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+void func_8003CD98(Player* player, Camera* camera, s16 playerId, s8 screenId) {
     if (player->type & PLAYER_EXISTS) {
         if (screenId == 0) {
             func_8002D268(player, camera, screenId, playerId);
@@ -1526,7 +1587,7 @@ void load_kart_textures(void) {
 
     if (LocalMP_IsActive() || (gGamestate == ENDING && LocalMP_CeremonyRacerCount() > NUM_PLAYERS)) {
         for (s8 screen = 0; screen < LocalMP_Count(); screen++) {
-            for (s8 racer = 0; racer < LocalMP_RacerCount(); racer++) {
+            for (s32 racer = 0; racer < LocalMP_RacerCount(); racer++) {
                 func_8003CD98(&gPlayers[racer], gScreenContexts[screen].camera, racer, screen);
             }
         }

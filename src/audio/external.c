@@ -21,6 +21,8 @@
 #include "objects.h"
 #include "main.h"
 #include "port/LocalMultiplayer.h"
+#include "port/ExtraRacers.h"
+#include <stddef.h>
 
 static bool sExpandedItemSpinPlaying = false;
 static bool sWasDrivingAudioScene = false;
@@ -38,6 +40,23 @@ s8 D_8018EF10;
 UnkStruct8018EF18 D_8018EF18[16];
 // chained list
 struct Unk_8018EFD8 D_8018EFD8[50];
+
+static s32 spatial_voice_racer(const void* position) {
+    const uintptr_t offset = (uintptr_t) position - (uintptr_t) &D_8018EFD8[0].unk18;
+    const size_t stride = sizeof(D_8018EFD8[0]);
+    if (offset >= sizeof(D_8018EFD8) || offset % stride != 0) return -1;
+    return D_8018EFD8[offset / stride].voiceRacer;
+}
+
+static s32 voice_racer(const void* position, u8 listener) {
+    if (listener < MAX_HUMAN_PLAYERS && position == &D_800E9F7C[listener].pos) return listener;
+    return spatial_voice_racer(position);
+}
+
+static void trace_sound(const char* event, u32 bits, const void* position, u8 listener, s32 channel) {
+    if (gAudioDiagnosticsEnabled)
+        AudioDiagnostics_Record(event, bits, voice_racer(position, listener), listener, channel);
+}
 u8 D_8018FB90;
 u8 D_8018FB91;
 Camera* gCopyCamera[MAX_HUMAN_PLAYERS];
@@ -466,8 +485,10 @@ struct Unk_8018EFD8* func_800C1C88(u8 arg0, Vec3f position, f32* velocity, f32* 
         D_8018EFD8[why1].cameraId = arg4;
         D_8018EFD8[why1].unk30 = arg0;
         D_8018EFD8[why1].soundBits = soundBits;
+        D_8018EFD8[why1].voiceRacer = -1;
         return &D_8018EFD8[why1];
     }
+    if (gAudioDiagnosticsEnabled) AudioDiagnostics_Record("spatial_pool_full", soundBits, -1, arg4, -1);
     return NULL;
 }
 
@@ -554,7 +575,8 @@ void func_800C1F8C(void) {
             camera = &gCopyCamera[cameraId];
             func_800C1DA4(*camera, (*camera)->rot, &D_8018EFD8[var_s1]);
             if (D_800EA1C8 != D_8018EFD8[var_s1].velX) {
-                func_800C1E2C(*camera, gVelocityCamera[0], &D_8018EFD8[var_s1]);
+                const u8 velocityView = D_8018EFD8[var_s1].voiceRacer >= 0 ? cameraId : 0;
+                func_800C1E2C(*camera, gVelocityCamera[velocityView], &D_8018EFD8[var_s1]);
             }
             var_a1 = var_s1;
         }
@@ -1335,6 +1357,9 @@ void play_sound(u32 soundBits, Vec3f* position, u8 cameraId, f32* arg3, f32* arg
 
     bank = soundBits >> 0x1C;
     if (sSoundBankDisabled[bank] == false) {
+        trace_sound("queued", soundBits, position, cameraId, -1);
+        if (gAudioDiagnosticsEnabled && (u8)(sSoundRequestCount + 1) == sNumProcessedSoundRequests)
+            trace_sound("request_queue_wrapped", soundBits, position, cameraId, -1);
         temp_v0 = &sSoundRequests[sSoundRequestCount];
         temp_v0->soundBits = soundBits;
         temp_v0->position = position;
@@ -1343,6 +1368,8 @@ void play_sound(u32 soundBits, Vec3f* position, u8 cameraId, f32* arg3, f32* arg
         temp_v0->unk10 = arg4;
         temp_v0->unk14 = arg5;
         sSoundRequestCount += 1;
+    } else {
+        trace_sound("bank_disabled", soundBits, position, cameraId, -1);
     }
 }
 
@@ -1388,6 +1415,7 @@ void func_800C41CC(u8 arg0, struct SoundCharacteristics* arg1) {
                 break;
         }
         if (found) {
+            if (sound->soundBits) trace_sound("request_cancelled", sound->soundBits, sound->position, sound->cameraId, -1);
             sound->soundBits = 0;
             if (*sound->position != D_800EA1C8) {
                 (*sound->position)[1] = 100000.0f;
@@ -1432,6 +1460,7 @@ void func_800C4398(void) {
                     if ((u32) (var_a2->soundBits & 0xFF00) >= (u32) (var_t3 & 0xFF00)) {
                         soundIndex = var_t2;
                     } else {
+                        trace_sound("emitter_priority_rejected", var_a2->soundBits, var_a2->position, var_a2->cameraId, -1);
                         soundIndex = 0;
                     }
                 }
@@ -1442,6 +1471,9 @@ void func_800C4398(void) {
                         (sSoundBanks[bank][soundIndex].soundStatus != 1)) {
                         func_800C40F0(sSoundBanks[bank][soundIndex].unk2C);
                     }
+                    const u32 previous = sSoundBanks[bank][soundIndex].soundBits;
+                    trace_sound(previous == var_a2->soundBits ? "bank_refreshed" : "bank_replaced",
+                                var_a2->soundBits, var_a2->position, var_a2->cameraId, -1);
                     sSoundBanks[bank][soundIndex].cameraId = var_a2->cameraId;
                     sSoundBanks[bank][soundIndex].soundBits = var_a2->soundBits;
                     sSoundBanks[bank][soundIndex].soundStatus = ((var_a2->soundBits & 0x01000000) >> 0x18);
@@ -1449,6 +1481,8 @@ void func_800C4398(void) {
                     sSoundBanks[bank][soundIndex].unk10 = var_a2->unk0C;
                     sSoundBanks[bank][soundIndex].unk14 = var_a2->unk10;
                     sSoundBanks[bank][soundIndex].unk18 = var_a2->unk14;
+                } else if (soundIndex != 0) {
+                    trace_sound("already_in_bank", var_a2->soundBits, var_a2->position, var_a2->cameraId, -1);
                 }
                 soundIndex = 0;
             }
@@ -1459,6 +1493,7 @@ void func_800C4398(void) {
     }
     if ((sSoundBanks[bank][sSoundBankFreeListFront[bank]].next != 0xFF) && (soundIndex != 0)) {
         soundIndex = sSoundBankFreeListFront[bank];
+        trace_sound("bank_added", var_a2->soundBits, var_a2->position, var_a2->cameraId, -1);
         sSoundBanks[bank][soundIndex].unk00 = &(*var_a2->position)[0];
         sSoundBanks[bank][soundIndex].unk04 = &(*var_a2->position)[1];
         sSoundBanks[bank][soundIndex].unk08 = &(*var_a2->position)[2];
@@ -1476,6 +1511,7 @@ void func_800C4398(void) {
         sSoundBanks[bank][sSoundBankFreeListFront[bank]].prev = 0xFF;
         sSoundBanks[bank][soundIndex].next = 0xFF;
     } else if (sSoundBanks[bank][sSoundBankFreeListFront[bank]].next == 0xFF) {
+        if (soundIndex != 0) trace_sound("bank_full", var_a2->soundBits, var_a2->position, var_a2->cameraId, -1);
         if (D_800EA1C8 != *var_a2->position) {
             (*var_a2->position)[1] = 100000.0f;
         }
@@ -1488,6 +1524,8 @@ GLOBAL_ASM("asm/non_matchings/audio/external/func_800C4398.s")
 void delete_sound_from_bank(u8 bankId, u8 soundId) {
     UNUSED s32 stackPadding;
     struct SoundCharacteristics* temp = &sSoundBanks[bankId][soundId];
+    trace_sound("bank_removed", temp->soundBits, temp->unk00, temp->cameraId,
+                temp->soundStatus >= 3 ? temp->unk2C : -1);
     if (*temp->unk00 != D_800EA1C8) {
         *temp->unk04 = 100000.0f;
     }
@@ -1539,10 +1577,13 @@ void func_800C4888(u8 bankId) {
     soundIndex = sSoundBanks[bankId][0].next;
     while (soundIndex != 0xFF) {
         temp_t2 = &sSoundBanks[bankId][soundIndex];
-        if ((temp_t2->soundStatus == 1) && ((temp_t2->soundBits & 0x08000000) == 0x08000000)) {
+        const bool nearbyRacerVoice = bankId == 2 && spatial_voice_racer(temp_t2->unk00) >= 0;
+        // A reaction that cannot claim a channel promptly should expire.
+        if (temp_t2->soundStatus == 1 && (nearbyRacerVoice || (temp_t2->soundBits & 0x08000000))) {
             temp_t2->freshness -= 1;
         }
         if (temp_t2->freshness == 0) {
+            trace_sound("expired", temp_t2->soundBits, temp_t2->unk00, temp_t2->cameraId, -1);
             delete_sound_from_bank(bankId, soundIndex);
         } else if (temp_t2->soundStatus != 0) {
             if (D_800EA1C8 == *temp_t2->unk00) {
@@ -1561,6 +1602,8 @@ void func_800C4888(u8 bankId) {
                     temp_t2->priority += (s32) (*temp_t2->unk08 * 6.0f);
                 }
             }
+            // Keep a nearby bot from taking precedence over a player's own voice.
+            if (nearbyRacerVoice) temp_t2->priority += 160000;
             if (bankId == 0 && LocalMP_IsActive() && LocalMP_Count() > 4) {
                 // Eight engine loops can occupy every bank-0 channel. Reserve
                 // priority for item feedback and each human's active drift
@@ -1585,6 +1628,7 @@ void func_800C4888(u8 bankId) {
                 var_f0 = 1e10f;
             }
             if (var_f0 < temp_t2->distance) {
+                trace_sound("out_of_range", temp_t2->soundBits, temp_t2->unk00, temp_t2->cameraId, -1);
                 if (temp_t2->soundStatus == 4) {
                     func_800CBBE8((temp_t2->unk2C << 8) | 0x06020000, 0);
                     if (temp_t2->soundBits & 0x08000000) {
@@ -1630,6 +1674,7 @@ void func_800C4888(u8 bankId) {
         } else {
             temp_t2 = &sSoundBanks[bankId][soundIndex];
             if (temp_t2->soundStatus == 4) {
+                trace_sound("channel_displaced", temp_t2->soundBits, temp_t2->unk00, temp_t2->cameraId, temp_t2->unk2C);
                 if (temp_t2->soundBits & 0x08000000) {
                     delete_sound_from_bank(bankId, soundIndex);
                     var_v1 = 1;
@@ -1694,6 +1739,11 @@ void func_800C4FE4(u8 bankId) {
             temp_s0 = &sSoundBanks[bankId][soundId];
             thing = gSequencePlayers[2].channels[D_80192C38];
             if (temp_s0->soundStatus == 2) {
+                // The speaker can be a different racer from the listener's camera.
+                const s32 speaker = voice_racer(temp_s0->unk00, temp_s0->cameraId);
+                const s8 voiceSet = speaker >= 0 ? ExtraRacers_VoiceSet(speaker) : 0;
+                trace_sound("channel_start", temp_s0->soundBits, temp_s0->unk00, temp_s0->cameraId, D_80192C38);
+                func_800CBBE8((D_80192C38 << 8) | 0x09020000, voiceSet);
                 temp_s0->unk2C = D_80192C38;
                 if (temp_s0->soundBits & 0x80000) {
                     D_800EA1C4 |= 1 << D_80192C38;
@@ -1705,6 +1755,7 @@ void func_800C4FE4(u8 bankId) {
                 func_800CBBE8((D_80192C38 << 8) | 0x06020000 | 4, temp_s0->soundBits & 0xFF);
                 temp_s0->soundStatus = 4U;
             } else if (((u8) thing->soundScriptIO[7]) == 0x80) {
+                trace_sound("channel_finished", temp_s0->soundBits, temp_s0->unk00, temp_s0->cameraId, D_80192C38);
                 func_800CBBE8(((D_80192C38 & 0xFF) << 8) | 0x06020000 | 7, 0);
                 delete_sound_from_bank(bankId, soundId);
             } else if (temp_s0->soundStatus == 3) {
@@ -3097,6 +3148,7 @@ void play_sound2(s32 soundBits) {
 }
 
 void play_sequence(u16 arg0) {
+    if (gAudioDiagnosticsEnabled) AudioDiagnostics_Record("music_request", arg0, -1, -1, -1);
 
     HMAS_Stop(HMAS_MUSIC); // Stop the current music sequence
 
@@ -3109,6 +3161,7 @@ void play_sequence(u16 arg0) {
 }
 
 void play_sequence2(u16 arg0) {
+    if (gAudioDiagnosticsEnabled) AudioDiagnostics_Record("secondary_sequence_request", arg0, -1, -1, -1);
     func_800C3448(arg0 | 0x01010000);
     D_800EA160 = arg0;
 }
@@ -3118,7 +3171,7 @@ void func_800C8F44(u8 arg0) {
     func_800C36C4(0, 0, arg0, 1);
 }
 
-void func_800C8F80(u8 arg0, u32 soundBits) {
+void func_800C8F80(u16 arg0, u32 soundBits) {
     if (arg0 >= MAX_HUMAN_PLAYERS) return;
     if (LocalMP_IsActive() && LocalMP_Count() > 4) {
         if (soundBits == SOUND_ARG_LOAD(0x01, 0x00, 0xFE, 0x1C)) return;
@@ -3138,7 +3191,7 @@ void func_800C8F80(u8 arg0, u32 soundBits) {
     }
 }
 
-void func_800C9018(u8 arg0, u32 soundBits) {
+void func_800C9018(u16 arg0, u32 soundBits) {
     if (arg0 >= MAX_HUMAN_PLAYERS) return;
     // The shared loop stops after the last active roulette finishes.
     if (LocalMP_IsActive() && LocalMP_Count() > 4 &&
@@ -3146,7 +3199,7 @@ void func_800C9018(u8 arg0, u32 soundBits) {
     func_800C5578(&D_800E9F7C[arg0].pos, soundBits);
 }
 
-void func_800C9060(u8 playerId, u32 soundBits) {
+void func_800C9060(u16 playerId, u32 soundBits) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA108 == 0) {
         switch (D_800EA0EC[playerId]) {
@@ -3160,7 +3213,7 @@ void func_800C9060(u8 playerId, u32 soundBits) {
     }
 }
 
-void func_800C90F4(u8 playerId, u32 soundBits) {
+void func_800C90F4(u16 playerId, u32 soundBits) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA108 == 0) {
         switch (D_800EA0EC[playerId]) {
@@ -3186,27 +3239,75 @@ void func_800C90F4(u8 playerId, u32 soundBits) {
     }
 }
 
-void func_800C9250(u8 arg0) {
+void func_800C9250(u16 arg0) {
     if (arg0 >= MAX_HUMAN_PLAYERS) return;
     func_800C90F4(arg0,
                   (gPlayers[arg0].characterId * 0x10) + (gAudioRandom & 1) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x01));
 }
 
-void func_800C92CC(u8 playerId, u32 soundBits) {
-    if (playerId >= MAX_HUMAN_PLAYERS) return;
-    u8 var_s0;
-    struct Unk_8018EFD8* temp_v0;
+static void play_nearby_racer_voice(s32 racerId, u32 soundBits) {
+    Player* racer = &gPlayers[racerId];
+    s32 listener = -1;
+    f32 closest = 600.0f * 600.0f;
+    for (s32 view = 0; view < LocalMP_Count(); ++view) {
+        const Camera* camera = gScreenContexts[view].camera;
+        if (camera == NULL) continue;
+        const f32 dx = racer->pos[0] - camera->pos[0];
+        const f32 dy = racer->pos[1] - camera->pos[1];
+        const f32 dz = racer->pos[2] - camera->pos[2];
+        const f32 distance = dx * dx + dy * dy + dz * dz;
+        if (distance < closest) {
+            closest = distance;
+            listener = view;
+        }
+    }
+    if (listener < 0) {
+        if (gAudioDiagnosticsEnabled) AudioDiagnostics_Record("voice_no_nearby_listener", soundBits, racerId, -1, -1);
+        return;
+    }
+
+    // Share the native spatial pool with track and item sounds. Limit the
+    // number of bot reactions waiting on the two character voice channels.
+    s32 voices = 0;
+    for (u8 index = D_8018EFD8[0].next; index != 0xFF; index = D_8018EFD8[index].next) {
+        const struct Unk_8018EFD8* emitter = &D_8018EFD8[index];
+        if (emitter->voiceRacer < 0 || emitter->unk18[1] == 100000.0f) continue;
+        if (emitter->voiceRacer == racerId) return;
+        ++voices;
+    }
+    if (voices >= 8 || sSoundBankDisabled[soundBits >> 28] ||
+        (u8)(sSoundRequestCount + 1) == sNumProcessedSoundRequests) {
+        if (gAudioDiagnosticsEnabled) AudioDiagnostics_Record("voice_capacity_limited", soundBits, racerId, listener, -1);
+        return;
+    }
+
+    // Spatial one-shots need no per-human engine state. The zero multiplier
+    // bypasses that part of the Doppler calculation.
+    struct Unk_8018EFD8* emitter =
+        func_800C1C88(0, racer->pos, racer->velocity, D_800EA1C8, listener, soundBits);
+    if (emitter == NULL) return;
+    emitter->voiceRacer = racerId;
+    emitter->unk34 = 170.0f;
+    play_sound(racer->characterId * 0x10 + soundBits, &emitter->unk18, listener,
+               &emitter->unk2C, &D_800EA1D4, (s8*) &D_800EA1DC);
+}
+
+void func_800C92CC(s32 playerId, u32 soundBits) {
+    if (playerId < 0 || playerId >= LocalMP_RacerCount()) return;
 
     if (LocalMP_IsActive()) {
-        // Native nearby-racer voices are disabled for 3+ listeners. Expanded
-        // human feedback can use its own slot emitter without multiplying the
-        // spatial request list by eight cameras.
-        if (playerId < LocalMP_Count() && !LocalMP_IsFinished(playerId)) {
+        if (gGamestate != RACING || D_800EA108 || D_800EA0F0 || LocalMP_IsFinished(playerId)) return;
+        if (playerId < LocalMP_Count()) {
             func_800C90F4(playerId, gPlayers[playerId].characterId * 0x10 + soundBits);
+        } else {
+            play_nearby_racer_voice(playerId, soundBits);
         }
         return;
     }
 
+    if (playerId >= MAX_HUMAN_PLAYERS) return;
+    u8 var_s0;
+    struct Unk_8018EFD8* temp_v0;
     if ((D_800EA108 == 0) && (D_800EA0F0 == 0) && ((s32) D_800EA1C0 < 2)) {
         for (var_s0 = 0; var_s0 < D_800EA1C0 + 1; var_s0++) {
             temp_v0 = func_800C1C88(playerId, gPlayers[playerId].pos, gPlayers[playerId].velocity, D_800EA1C8,
@@ -3225,7 +3326,7 @@ void func_800C92CC(u8 playerId, u32 soundBits) {
     }
 }
 
-void func_800C94A4(u8 playerId) {
+void func_800C94A4(u16 playerId) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     u32 var_a0;
 
@@ -3356,7 +3457,7 @@ void func_800C99E0(Vec3f arg0, s32 soundBits) {
     }
 }
 
-void func_800C9A88(u8 playerId) {
+void func_800C9A88(u16 playerId) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     u8 var_s0;
     u32 soundBits;
@@ -3415,6 +3516,26 @@ void func_800C9D0C(u8 playerId) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     func_800C550C(
         func_800C21E8(gPlayers[playerId].pos, gPlayers[playerId].characterId + SOUND_ARG_LOAD(0x31, 0x02, 0x80, 0x00)));
+}
+
+void Audio_PlayNearbyBotItem(s32 racerId, u32 soundBits) {
+    static size_t lastTick = 0;
+    static bool played = false;
+    if (gTickCounter < lastTick) played = false;
+    if (racerId < 0 || racerId >= LocalMP_RacerCount() || gDemoMode ||
+        !(gPlayers[racerId].type & PLAYER_CPU) || (gPlayers[racerId].type & PLAYER_HUMAN) ||
+        (played && gTickCounter - lastTick < 15)) return;
+    Player* racer = &gPlayers[racerId];
+    for (s32 view = 0; view < LocalMP_Count(); ++view) {
+        const Camera* camera = gScreenContexts[view].camera;
+        if (!camera) continue;
+        f32 dx = racer->pos[0] - camera->pos[0], dy = racer->pos[1] - camera->pos[1], dz = racer->pos[2] - camera->pos[2];
+        if (dx * dx + dy * dy + dz * dz < 600.0f * 600.0f) {
+            func_800C98B8(racer->pos, racer->velocity, soundBits);
+            lastTick = gTickCounter; played = true;
+            break;
+        }
+    }
 }
 
 void func_800C9D80(Vec3f position, Vec3f velocity, u32 soundBits) {
@@ -3506,7 +3627,7 @@ void Audio_StopExpandedRaceSounds(void) {
     stop_driving_sound_banks();
 }
 
-void func_800CA118(u8 arg0) {
+void func_800CA118(u16 arg0) {
     if (arg0 >= MAX_HUMAN_PLAYERS) return;
     D_800EA0EC[arg0] = 1;
     D_800E9EA4[arg0] = 1;
@@ -3547,7 +3668,7 @@ void func_800CA118(u8 arg0) {
     }
 }
 
-void func_800CA24C(u8 arg0) {
+void func_800CA24C(u16 arg0) {
     if (arg0 >= MAX_HUMAN_PLAYERS) return;
     D_800EA0EC[arg0] = 2;
 }
@@ -3631,7 +3752,7 @@ void func_800CA49C(u8 arg0) {
     }
 }
 
-void func_800CA59C(u8 playerId) {
+void func_800CA59C(u16 playerId) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if ((D_800EA0EC[playerId] == 0) && (D_800EA108 == 0)) {
         play_sound((gPlayers[playerId].characterId * 0x10) + 0x29008001, &D_800E9F7C[playerId].pos, playerId,
@@ -3659,7 +3780,7 @@ void func_800CA59C(u8 playerId) {
     }
 }
 
-void func_800CA730(u8 arg0) {
+void func_800CA730(u16 arg0) {
     if (arg0 >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA0EC[arg0] == 0) {
         if ((D_800EA108 == 0) && (D_800EA10C[arg0] != 0)) {
@@ -3702,8 +3823,23 @@ void func_800CA730(u8 arg0) {
     }
 }
 
-void func_800CA984(u8 arg0) {
-    if (arg0 >= MAX_HUMAN_PLAYERS) return;
+void func_800CA984(u16 arg0) {
+    if (arg0 >= MAX_HUMAN_PLAYERS) {
+        if (arg0 >= LocalMP_RacerCount() || D_800EA108 || D_800EA0F0) return;
+        Player* racer = &gPlayers[arg0];
+        bool nearby = false;
+        for (s32 view = 0; view < LocalMP_Count(); ++view) {
+            const Camera* camera = gScreenContexts[view].camera;
+            if (!camera) continue;
+            const f32 dx = racer->pos[0] - camera->pos[0];
+            const f32 dy = racer->pos[1] - camera->pos[1];
+            const f32 dz = racer->pos[2] - camera->pos[2];
+            if (dx * dx + dy * dy + dz * dz < 600.0f * 600.0f) { nearby = true; break; }
+        }
+        if (nearby && !func_800C21E8(racer->pos, SOUND_ITEM_STAR))
+            func_800C9D80(racer->pos, racer->velocity, SOUND_ITEM_STAR);
+        return;
+    }
     u8 i;
     struct Unk_8018EFD8* temp_v0_2;
 
@@ -3718,8 +3854,8 @@ void func_800CA984(u8 arg0) {
     }
 }
 
-void func_800CAACC(u8 playerId) {
-    if (playerId >= MAX_HUMAN_PLAYERS) return;
+void func_800CAACC(u16 playerId) {
+    if (playerId >= NUM_RACERS) return;
     if ((u8) D_800EA108 == 0) {
         func_800C5578(func_800C21E8(gPlayers[playerId].pos, SOUND_ITEM_STAR), SOUND_ITEM_STAR);
     }
@@ -3775,7 +3911,7 @@ void func_800CAD40(UNUSED s32 arg0) {
     }
 }
 
-void func_800CADD0(u8 playerId, f32 arg1) {
+void func_800CADD0(u16 playerId, f32 arg1) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA108 == 0) {
         switch (D_800EA0EC[playerId]) {
@@ -3800,7 +3936,7 @@ void func_800CADD0(u8 playerId, f32 arg1) {
     }
 }
 
-void func_800CAEC4(u8 playerId, f32 arg1) {
+void func_800CAEC4(u16 playerId, f32 arg1) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA108 == 0) {
         switch (D_800EA0EC[playerId]) {
@@ -3816,9 +3952,9 @@ void func_800CAEC4(u8 playerId, f32 arg1) {
                     arg1 = 0.0f;
                 }
                 D_800EA120[playerId] = arg1;
-                //! @warning this used to be gCurrentCourseId + 0x19007020
-                // This may not be equivallent.
-                play_sound(TrackBrowser_GetTrackIndex() + 0x19007020, &D_800E9F7C[playerId].pos, playerId, &D_800EA1D4,
+                const size_t course = CM_IsTrackResource("amped:course_09") ?
+                    TRACK_WARIO_STADIUM : TrackBrowser_GetTrackIndex();
+                play_sound(course + 0x19007020, &D_800E9F7C[playerId].pos, playerId, &D_800EA1D4,
                            &D_800EA120[playerId], (s8*) &D_800E9F7C[playerId].unk_14);
                 break;
             default:
@@ -3827,7 +3963,7 @@ void func_800CAEC4(u8 playerId, f32 arg1) {
     }
 }
 
-void func_800CAFC0(u8 playerId) {
+void func_800CAFC0(u16 playerId) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA108 == 0) {
         switch (D_800EA0EC[playerId]) {
@@ -3843,7 +3979,7 @@ void func_800CAFC0(u8 playerId) {
     }
 }
 
-void func_800CB064(u8 playerId) {
+void func_800CB064(u16 playerId) {
     if (playerId >= MAX_HUMAN_PLAYERS) return;
     if (D_800EA108 == 0) {
         if (D_800EA170[playerId] == 1) {

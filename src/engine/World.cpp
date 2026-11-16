@@ -6,6 +6,7 @@
 #include <memory>
 #include "objects/Object.h"
 #include "port/Game.h"
+#include "port/LocalMultiplayer.h"
 #include "engine/sky/Sky.h"
 
 extern "C" {
@@ -36,6 +37,37 @@ void World::AddCup(Cup* cup) {
     Cups.push_back(cup);
 }
 
+void World::InitExtraCups() {
+    static const char* names[] = { "AMPED CUP 1", "AMPED CUP 2", "AMPED CUP 3", "AMPED CUP 4" };
+    for (int i = 0; i < 16; ++i) {
+        char name[32];
+        snprintf(name, sizeof(name), "amped:course_%02d", i + 1);
+        if (!gTrackRegistry.Find(name)) return;
+    }
+    for (int cup = 0; cup < 4; ++cup) {
+        std::vector<std::string> tracks;
+        for (int row = 0; row < 4; ++row) {
+            char name[32];
+            snprintf(name, sizeof(name), "amped:course_%02d", cup * 4 + row + 1);
+            tracks.emplace_back(name);
+        }
+        ExtraCups[cup] = std::make_unique<Cup>("amped:cup_" + std::to_string(cup + 1), names[cup], tracks);
+    }
+}
+
+bool World::ExtraCupsAvailable() const {
+    return CVarGetInteger(CVAR_EXTRA_MAPS, 1) && ExtraCups[0] && ExtraCups[1] && ExtraCups[2] && ExtraCups[3];
+}
+
+void World::SetExtraCupPage(bool enabled) {
+    ExtraCupPage = enabled && ExtraCupsAvailable();
+}
+
+Cup* World::GetRaceCup(size_t index) {
+    if (ExtraCupPage && index < 4 && ExtraCupsAvailable()) return ExtraCups[index].get();
+    return index < Cups.size() ? Cups[index] : nullptr;
+}
+
 void World::SetCurrentTrack(std::unique_ptr<Track> track) {
     if (mTrack == track) {
         return;
@@ -55,34 +87,37 @@ u32 World::GetCupIndex() {
 }
 
 u32 World::NextCup() {
-    s32 hack = 1;
-
-    // Do not display battle mode on GP, TT, or VS
-    if (gModeSelection != BATTLE) {
-        hack = 2;
-    }
-
-    if (CupIndex < Cups.size() - hack) {
-        CupIndex++;
-        CurrentCup = Cups[CupIndex];
-        CurrentCup->CursorPosition = 0;
-        reset_cycle_flash_menu();
-        play_sound2(SOUND_MENU_CURSOR_MOVE);
-        return CupIndex;
-    }
-    return Cups.size() - hack;
+    const bool race = gModeSelection == GRAND_PRIX || gModeSelection == VERSUS || gModeSelection == TIME_TRIALS;
+    const size_t last = gModeSelection == BATTLE ? Cups.size() - 1 : Cups.size() - 2;
+    if (race && ExtraCupsAvailable() && CupIndex == 3 && !ExtraCupPage) {
+        ExtraCupPage = true;
+        CupIndex = 0;
+    } else if (race && ExtraCupPage && CupIndex == 3) {
+        ExtraCupPage = false;
+        CupIndex = 0;
+    } else if (CupIndex < last) {
+        ++CupIndex;
+    } else return CupIndex;
+    CurrentCup = GetRaceCup(CupIndex);
+    CurrentCup->CursorPosition = 0;
+    reset_cycle_flash_menu();
+    play_sound2(SOUND_MENU_CURSOR_MOVE);
+    return CupIndex;
 }
 
 u32 World::PreviousCup() {
-    if (CupIndex > 0) {
-        CupIndex--;
-        CurrentCup = Cups[CupIndex];
-        CurrentCup->CursorPosition = 0;
-        reset_cycle_flash_menu();
-        play_sound2(SOUND_MENU_CURSOR_MOVE);
-        return CupIndex;
-    }
-    return 0;
+    const bool race = gModeSelection == GRAND_PRIX || gModeSelection == VERSUS || gModeSelection == TIME_TRIALS;
+    if (race && ExtraCupsAvailable() && CupIndex == 0) {
+        ExtraCupPage = !ExtraCupPage;
+        CupIndex = 3;
+    } else if (CupIndex > 0) {
+        --CupIndex;
+    } else return 0;
+    CurrentCup = GetRaceCup(CupIndex);
+    CurrentCup->CursorPosition = 0;
+    reset_cycle_flash_menu();
+    play_sound2(SOUND_MENU_CURSOR_MOVE);
+    return CupIndex;
 }
 
 void World::SetCupIndex(size_t index) {
@@ -91,6 +126,8 @@ void World::SetCupIndex(size_t index) {
 
 void World::SetCurrentCup(Cup* cup) {
     if (cup) {
+        ExtraCupPage = false;
+        for (const auto& extra : ExtraCups) if (extra && extra.get() == cup) ExtraCupPage = true;
         CurrentCup = cup;
         CurrentCup->CursorPosition = 0;
     }

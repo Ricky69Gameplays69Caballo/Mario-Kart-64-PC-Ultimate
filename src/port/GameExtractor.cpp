@@ -160,8 +160,8 @@ void GameExtractor::GetRoms(std::vector<std::string>& roms) {
                 }
             }
         }
+        closedir(d);
     }
-    closedir(d);
 #else
     for (const auto& file : std::filesystem::directory_iterator(".")) {
         if (file.is_directory())

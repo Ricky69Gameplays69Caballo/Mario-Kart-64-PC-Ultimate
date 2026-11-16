@@ -94,8 +94,8 @@ typedef struct {
                                        * is within a certain distance of the vehicle. Likely related to audio stuff
                                        * Seems to turn on/off based on player distance from the vehicle
                                        **/
-    /* 0x30 */ s8 someFlags;          //
-    /* 0x31 */ s8 someFlagsTheSequel; //
+    /* 0x30 */ u32 someFlags;         //
+    /* 0x31 */ u32 someFlagsTheSequel; //
     /* 0x32 */                        // s16 compilerPadding2;
 } VehicleStuff;                       // size = 0x34
 

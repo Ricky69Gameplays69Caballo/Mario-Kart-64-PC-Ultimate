@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <vector>
 #include <libultraship.h>
 #include "Track.h"
 
@@ -17,6 +19,10 @@ extern const course_texture luigi_raceway_textures[];
 
 class LuigiRaceway : public Track {
     void CopyJumbotron(s32 ulx, s32 uly, s16 portionToDraw, u16* source);
+    void PrepareFirstTurnDisplayLists();
+    static constexpr size_t SectionDisplayListCount = 120;
+    std::array<const char*, SectionDisplayListCount> mSectionDisplayLists{};
+    std::array<std::vector<Gfx>, SectionDisplayListCount> mFirstTurnDisplayLists;
     s32 mJumbotronFrame = -1;
     bool mJumbotronBlank = false;
 
@@ -30,8 +36,8 @@ class LuigiRaceway : public Track {
     virtual void BeginPlay() override;
     virtual void InitTrackObjects() override;
     virtual void SomeSounds() override;
-    virtual void WhatDoesThisDo(Player* player, int8_t playerId) override;
-    virtual void WhatDoesThisDoAI(Player* player, int8_t playerId) override;
+    virtual void WhatDoesThisDo(Player* player, int16_t playerId) override;
+    virtual void WhatDoesThisDoAI(Player* player, int16_t playerId) override;
     virtual void SetStaffGhost() override;
     virtual void Draw(ScreenContext*) override;
     virtual void DrawCredits() override;

@@ -134,9 +134,9 @@ void DoubleDeck::InitTrackObjects() {}
 
 void DoubleDeck::SomeSounds() {}
 
-void DoubleDeck::WhatDoesThisDo(Player* player, int8_t playerId) {}
+void DoubleDeck::WhatDoesThisDo(Player* player, int16_t playerId) {}
 
-void DoubleDeck::WhatDoesThisDoAI(Player* player, int8_t playerId) {}
+void DoubleDeck::WhatDoesThisDoAI(Player* player, int16_t playerId) {}
 
 void DoubleDeck::Draw(ScreenContext* arg0) {
     set_track_light_direction(D_800DC610, D_802B87D4, 0, 1);
@@ -151,7 +151,7 @@ void DoubleDeck::Draw(ScreenContext* arg0) {
 
 void DoubleDeck::DrawCredits() {}
 
-void DoubleDeck::Waypoints(Player* player, int8_t playerId) {
+void DoubleDeck::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = 0;
 }
 

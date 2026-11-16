@@ -172,7 +172,7 @@ void PodiumCeremony::InitTrackObjects() {
 void PodiumCeremony::SomeSounds() {
 }
 
-void PodiumCeremony::WhatDoesThisDo(Player* player, int8_t playerId) {
+void PodiumCeremony::WhatDoesThisDo(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x180) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1E1)) {
         if (D_80165300[playerId] != 1) {
@@ -187,7 +187,7 @@ void PodiumCeremony::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void PodiumCeremony::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void PodiumCeremony::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x180) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1E1)) {
         if (D_80165300[playerId] != 1) {

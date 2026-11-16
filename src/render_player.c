@@ -35,6 +35,37 @@
 #include "engine/Matrix.h"
 #include "port/interpolation/FrameInterpolation.h"
 #include "port/Engine.h"
+#include <math.h>
+#include <string.h>
+
+static bool sReuseKartPalettes;
+
+// Stable addresses let the texture cache share identical CI sprites across karts.
+// Never overwrite a published palette while a display list can reference it.
+static struct_D_802F1F80* shared_kart_palette(struct_D_802F1F80* palette) {
+    enum { PALETTE_CACHE_SIZE = 4096, PALETTE_PROBE_LIMIT = 16 };
+    static ALIGNED8 struct_D_802F1F80 palettes[PALETTE_CACHE_SIZE];
+    static u64 hashes[PALETTE_CACHE_SIZE];
+    u64 hash = UINT64_C(0xcbf29ce484222325);
+    for (size_t offset = 0; offset < sizeof(*palette); offset += sizeof(u64)) {
+        u64 word;
+        memcpy(&word, (const u8*) palette + offset, sizeof(word));
+        hash = (hash ^ word) * UINT64_C(0x100000001b3);
+    }
+    hash |= 1;
+    for (size_t probe = 0; probe < PALETTE_PROBE_LIMIT; ++probe) {
+        const size_t slot = (hash + probe) & (PALETTE_CACHE_SIZE - 1);
+        if (hashes[slot] == 0) {
+            palettes[slot] = *palette;
+            hashes[slot] = hash;
+            return &palettes[slot];
+        }
+        if (hashes[slot] == hash && memcmp(&palettes[slot], palette, sizeof(*palette)) == 0) {
+            return &palettes[slot];
+        }
+    }
+    return palette;
+}
 
 s8 gRenderingFramebufferByPlayer[] = { 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x02, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02 };
 
@@ -59,7 +90,7 @@ u16 gPlayerYellowEffect[NUM_RACERS];
 // Likely an unused colour effect.
 UNUSED u16 gPlayerWhiteEffect[NUM_RACERS];
 s32 D_80164B80[296];
-s16 D_80165020[40];
+s16 D_80165020[NUM_RACERS];
 Vec3f gPlayerLastVelocity[NUM_RACERS];
 s16 gLastAnimFrameSelector[MAX_HUMAN_PLAYERS][NUM_RACERS];
 s16 gLastAnimGroupSelector[MAX_HUMAN_PLAYERS][NUM_RACERS];
@@ -206,7 +237,7 @@ u16 func_8001FD78(Player* player, f32 posX, UNUSED f32 arg2, f32 posZ) {
 /**
  * @brief one of his function is to put the frame to load in to a list to load it to be only applied for the next frame
  */
-void init_render_player(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+void init_render_player(Player* player, Camera* camera, s16 playerId, s8 screenId) {
     UNUSED s32 pad[4];
     s32 sp4C;
     s32 sp48;
@@ -245,7 +276,7 @@ void init_render_player(Player* player, Camera* camera, s8 playerId, s8 screenId
                 }
             } else {
                 if ((check_player_camera_collision(player, camera, D_80165574 + sp4C, D_80165576) == 1) & 0xFFFF) {
-                    if ((sRenderingFramebuffer == gRenderingFramebufferByPlayer[playerId]) ||
+                    if ((sRenderingFramebuffer == gRenderingFramebufferByPlayer[playerId % ARRAY_COUNT(gRenderingFramebufferByPlayer)]) ||
                         ((gLastAnimFrameSelector[screenId][playerId] - player->animFrameSelector[screenId]) > 0x13) ||
                         ((gLastAnimFrameSelector[screenId][playerId] - player->animFrameSelector[screenId]) < -0x13) ||
                         (D_80165190[screenId][playerId] == (s16) 1U)) {
@@ -335,7 +366,7 @@ void load_kart_texture_and_render_kart_particles(s32 screenIdx) {
     );
 }
 
-void try_rendering_player(Player* player, s8 playerId, s8 screenIdx) {
+void try_rendering_player(Player* player, s16 playerId, s8 screenIdx) {
 
     if (((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) && ((player->type & PLAYER_UNKNOWN_0x40) == 0)) {
         if ((player->unk_002 & 2ull << (screenIdx * 4)) == 2ull << (screenIdx * 4)) {
@@ -344,16 +375,75 @@ void try_rendering_player(Player* player, s8 playerId, s8 screenIdx) {
     }
 }
 
+static bool kart_outside_view(const Player* player, const Camera* camera,
+                              const Vec3f forward, const Vec3f right, f32 slope) {
+    const f32 dx = player->pos[0] - camera->pos[0];
+    const f32 dy = player->pos[1] - camera->pos[1];
+    const f32 dz = player->pos[2] - camera->pos[2];
+    const f32 depth = dx * forward[0] + dy * forward[1] + dz * forward[2];
+    const f32 side = dx * right[0] + dy * right[1] + dz * right[2];
+    // Pad the sprite bounds for shadows, reflections, and boost effects.
+    const f32 radius = 128.0f + fabsf(player->pos[1] - player->unk_074);
+    return depth < -radius || fabsf(side) > radius + (depth + radius) * slope;
+}
+
+bool is_distant_bot_for_rendering(const Player* player, const Camera* camera, s32 racer, s32 localPlayers) {
+    if (racer < localPlayers || !(player->type & PLAYER_CPU) || (player->type & PLAYER_HUMAN)) {
+        return false;
+    }
+    const f32 dx = player->pos[0] - camera->pos[0];
+    const f32 dz = player->pos[2] - camera->pos[2];
+    const f32 botDrawDistance = 650.0f;
+    return dx * dx + dz * dz > botDrawDistance * botDrawDistance;
+}
+
 void render_players(Camera* camera, s32 screenIdx) {
     if ((LocalMP_IsActive() || gGamestate == ENDING) && LocalMP_RacerCount() > NUM_PLAYERS) {
+        const s32 racers = LocalMP_RacerCount();
+        const bool largeRace = gGamestate == RACING && racers >= LARGE_GRID_OPTIMIZATION_MIN_RACERS;
+        sReuseKartPalettes = largeRace && CVarGetInteger(CVAR_LARGE_GRID_PALETTES, 0);
+        const bool limitDistantBots = largeRace && CVarGetInteger(CVAR_LARGE_GRID_DISTANT_BOTS, 0);
+        const s32 localPlayers = limitDistantBots ? LocalMP_Count() : 0;
+        bool cull = largeRace && CVarGetInteger(CVAR_LARGE_GRID_CULLING, 0) &&
+                    !CVarGetInteger("gNoCulling", 0) && CVarGetInteger("gInterpolationFPS", 30) <= 30 &&
+                    !CVarGetInteger("gModifyInterpolationTargetFPS", 0);
+        Vec3f forward, right;
+        f32 slope = 0.0f;
+        if (cull) {
+            for (s32 axis = 0; axis < 3; ++axis) {
+                forward[axis] = camera->lookAt[axis] - camera->pos[axis];
+            }
+            right[0] = forward[1] * camera->up[2] - forward[2] * camera->up[1];
+            right[1] = forward[2] * camera->up[0] - forward[0] * camera->up[2];
+            right[2] = forward[0] * camera->up[1] - forward[1] * camera->up[0];
+            const f32 forwardLength = sqrtf(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
+            const f32 rightLength = sqrtf(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+            cull = forwardLength > 0.001f && rightLength > 0.001f &&
+                   camera->fieldOfView > 0.0f && camera->fieldOfView < 170.0f;
+            if (cull) {
+                for (s32 axis = 0; axis < 3; ++axis) {
+                    forward[axis] /= forwardLength;
+                    right[axis] /= rightLength;
+                }
+                const f32 widescreen = fmaxf(1.0f, OTRGetAspectRatio() / (4.0f / 3.0f));
+                slope = tanf(camera->fieldOfView * (f32)(M_PI / 360.0)) * gScreenAspect * widescreen;
+            }
+        }
         gPlayersToRenderCount = 0;
-        for (s8 racer = 0; racer < LocalMP_RacerCount(); ++racer)
+        for (s32 racer = 0; racer < racers; ++racer)
             init_render_player(&gPlayers[racer], camera, racer, screenIdx);
         if (gPlayersToRenderCount) load_kart_texture_and_render_kart_particles(screenIdx);
-        for (s8 racer = 0; racer < LocalMP_RacerCount(); ++racer) {
-            try_rendering_player(&gPlayers[racer], racer, screenIdx);
-            render_kart_particles(&gPlayers[racer], racer, screenIdx);
+        for (s32 racer = 0; racer < racers; ++racer) {
+            Player* player = &gPlayers[racer];
+            if (limitDistantBots && is_distant_bot_for_rendering(player, camera, racer, localPlayers)) {
+                continue;
+            }
+            if (!cull || (player->type & PLAYER_HUMAN) || !kart_outside_view(player, camera, forward, right, slope)) {
+                try_rendering_player(player, racer, screenIdx);
+            }
+            render_kart_particles(player, racer, screenIdx);
         }
+        sReuseKartPalettes = false;
         gPlayersToRenderCount = 0;
         return;
     }
@@ -415,14 +505,16 @@ void render_players(Camera* camera, s32 screenIdx) {
 s32 junk[] = { 0, 0, 0 };
 
 static Vtx extraRacerVtx[NUM_RACERS - NUM_PLAYERS][16];
-Vtx* gPlayerVtx[] = { gPlayerOneVtx,  gPlayerTwoVtx, gPlayerThreeVtx, gPlayerFourVtx,
-                      gPlayerFiveVtx, gPlayerSixVtx, gPlayerSevenVtx, gPlayerEightVtx,
-                      extraRacerVtx[0], extraRacerVtx[1], extraRacerVtx[2], extraRacerVtx[3],
-                      extraRacerVtx[4], extraRacerVtx[5], extraRacerVtx[6], extraRacerVtx[7] };
+Vtx* gPlayerVtx[NUM_RACERS] = {
+    gPlayerOneVtx, gPlayerTwoVtx, gPlayerThreeVtx, gPlayerFourVtx,
+    gPlayerFiveVtx, gPlayerSixVtx, gPlayerSevenVtx, gPlayerEightVtx
+};
 
 void init_extra_racer_vertices(void) {
-    for (s32 racer = 0; racer < NUM_RACERS - NUM_PLAYERS; ++racer)
-        memcpy(extraRacerVtx[racer], gPlayerOneVtx, sizeof(extraRacerVtx[racer]));
+    for (s32 racer = NUM_PLAYERS; racer < NUM_RACERS; ++racer) {
+        gPlayerVtx[racer] = extraRacerVtx[racer - NUM_PLAYERS];
+        memcpy(gPlayerVtx[racer], gPlayerOneVtx, sizeof(extraRacerVtx[0]));
+    }
 }
 
 f32 gCharacterSize[] = { MARIO_SIZE, LUIGI_SIZE, YOSHI_SIZE, TOAD_SIZE, DK_SIZE, WARIO_SIZE, PEACH_SIZE, BOWSER_SIZE };
@@ -564,7 +656,7 @@ const char** wheelPtr[] = {
 s32 D_800DDE74[] = { 96, 128, 192, 256, 288, 384, 512, 544, 576, 0, 0 };
 
 void func_80021B0C(void) {
-    for (s8 racer = NUM_PLAYERS; racer < LocalMP_RacerCount(); ++racer) func_8006E7CC(&gPlayers[racer], racer, 0);
+    for (s32 racer = NUM_PLAYERS; racer < LocalMP_RacerCount(); ++racer) func_8006E7CC(&gPlayers[racer], racer, 0);
     func_8006E7CC(gPlayerOne, 0, 0);
     func_8006E7CC(gPlayerTwo, 1, 0);
     func_8006E7CC(gPlayerThree, 2, 0);
@@ -588,7 +680,7 @@ void func_80021B0C(void) {
 }
 
 void func_80021C78(void) {
-    for (s8 racer = NUM_PLAYERS; racer < LocalMP_RacerCount(); ++racer) func_8006E848(&gPlayers[racer], racer, 1);
+    for (s32 racer = NUM_PLAYERS; racer < LocalMP_RacerCount(); ++racer) func_8006E848(&gPlayers[racer], racer, 1);
     func_8006E848(gPlayerOne, 0, 1);
     func_8006E848(gPlayerTwo, 1, 1);
     func_8006E848(gPlayerThree, 2, 1);
@@ -792,7 +884,7 @@ void func_80022744(void) {
 
 void func_8002276C(void) {
     if (LocalMP_IsActive()) {
-        for (s8 i = 0; i < LocalMP_RacerCount(); i++) func_80022A98(&gPlayers[i], i);
+        for (s32 i = 0; i < LocalMP_RacerCount(); i++) func_80022A98(&gPlayers[i], i);
         return;
     }
     switch (gActiveScreenMode) { /* irregular */
@@ -870,7 +962,7 @@ void func_8002276C(void) {
     }
 }
 
-void func_80022A98(Player* player, s8 arg1) {
+void func_80022A98(Player* player, s16 arg1) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         func_80026A48(player, arg1);
         func_800235AC(player, arg1);
@@ -888,7 +980,7 @@ void func_80022A98(Player* player, s8 arg1) {
     }
 }
 
-void func_80022B50(Player* player, UNUSED s8 arg1) {
+void func_80022B50(Player* player, UNUSED s16 arg1) {
     f32 temp_f0;
     s16 var_v0;
 
@@ -903,7 +995,7 @@ void func_80022B50(Player* player, UNUSED s8 arg1) {
     player->unk_DB4.unk2 = var_v0;
 }
 
-void func_80022BC4(Player* player, UNUSED s8 arg1) {
+void func_80022BC4(Player* player, UNUSED s16 arg1) {
     f32 temp_f0 = player->unk_DB4.unk10;
     s16 temp_v0 = player->unk_DB4.unk2;
     s16 temp_f16;
@@ -928,7 +1020,7 @@ void func_80022BC4(Player* player, UNUSED s8 arg1) {
     player->unk_DB4.unk2 = temp_v0;
 }
 
-void func_80022CA8(Player* player, s8 playerId, UNUSED s8 screenId, s8 flipOffset) {
+void func_80022CA8(Player* player, s16 playerId, UNUSED s8 screenId, s8 flipOffset) {
     s16 temp_v0 = player->unk_DA4;
 
     gPlayerVtx[playerId][flipOffset + 0x0].v.ob[1] = 18 - (temp_v0 * 2.3);
@@ -943,12 +1035,12 @@ void func_80022CA8(Player* player, s8 playerId, UNUSED s8 screenId, s8 flipOffse
  * Seems to stretch/warp a specific players texture for a
  * short period of time. Perhaps does not do anything
  **/
-void func_80022D60(UNUSED Player* player, s8 playerId, UNUSED s8 screenId, s8 flipOffset) {
+void func_80022D60(UNUSED Player* player, s16 playerId, UNUSED s8 screenId, s8 flipOffset) {
     gPlayerVtx[playerId][flipOffset].v.ob[1] = 21;
     gPlayerVtx[playerId][flipOffset + 0x3].v.ob[1] = 21;
 }
 
-void func_80022DB4(Player* player, UNUSED s8 arg1) {
+void func_80022DB4(Player* player, UNUSED s16 arg1) {
     f32 temp_f0 = player->unk_DB4.unkC;
     s16 temp_v0 = player->unk_DB4.unk18;
     s16 temp_f16;
@@ -972,7 +1064,7 @@ void func_80022DB4(Player* player, UNUSED s8 arg1) {
     player->unk_DB4.unk18 = temp_v0;
 }
 
-void func_80022E84(Player* player, s8 playerId, UNUSED s8 screenId, s8 flipOffset) {
+void func_80022E84(Player* player, s16 playerId, UNUSED s8 screenId, s8 flipOffset) {
     s16 temp_v0 = player->unk_DB4.unk1E;
 
     gPlayerVtx[playerId][flipOffset + 0x0].v.ob[1] = 18 - temp_v0;
@@ -986,7 +1078,7 @@ void func_80022E84(Player* player, s8 playerId, UNUSED s8 screenId, s8 flipOffse
 /**
  * Sets player shading/colour.
  */
-void change_player_color_effect_rgb(UNUSED Player* player, s8 arg1, s32 arg2, f32 alpha) {
+void change_player_color_effect_rgb(UNUSED Player* player, s16 arg1, s32 arg2, f32 alpha) {
     gPlayerRedEffect[arg1] =
         (s16) ((f32) gPlayerRedEffect[arg1] - ((gPlayerRedEffect[arg1] - ((arg2 >> 16) & 0xFF)) * alpha));
 
@@ -997,7 +1089,7 @@ void change_player_color_effect_rgb(UNUSED Player* player, s8 arg1, s32 arg2, f3
         (s16) ((f32) gPlayerBlueEffect[arg1] - ((gPlayerBlueEffect[arg1] - (arg2 & 0xFF)) * alpha));
 }
 
-void change_player_color_effect_cmy(UNUSED Player* player, s8 arg1, s32 arg2, f32 arg3) {
+void change_player_color_effect_cmy(UNUSED Player* player, s16 arg1, s32 arg2, f32 arg3) {
     move_u16_towards(&gPlayerCyanEffect[arg1], (arg2 >> 16) & 0xFF, arg3);
     move_u16_towards(&gPlayerMagentaEffect[arg1], (arg2 >> 8) & 0xFF, arg3);
     move_u16_towards(&gPlayerYellowEffect[arg1], arg2 & 0xFF, arg3);
@@ -1007,7 +1099,7 @@ void change_player_color_effect_cmy(UNUSED Player* player, s8 arg1, s32 arg2, f3
  * Activates in the tunnel to shade the player a bit darker
  * Sort of an atmospheric effect.
  */
-bool is_player_under_light_luigi_raceway(Player* player, s8 arg1) {
+bool is_player_under_light_luigi_raceway(Player* player, s16 arg1) {
     if (IsLuigiRaceway()) {
         if (((gNearestPathPointByPlayerId[arg1] >= 0x14F) && (gNearestPathPointByPlayerId[arg1] < 0x158)) ||
             ((gNearestPathPointByPlayerId[arg1] >= 0x15E) && (gNearestPathPointByPlayerId[arg1] < 0x164)) ||
@@ -1025,7 +1117,7 @@ bool is_player_under_light_luigi_raceway(Player* player, s8 arg1) {
     return false;
 }
 
-void render_light_environment_on_player(Player* player, s8 arg1) {
+void render_light_environment_on_player(Player* player, s16 arg1) {
     if (IsBowsersCastle()) {
         if (((gNearestPathPointByPlayerId[arg1] >= 0x15) && (gNearestPathPointByPlayerId[arg1] < 0x2A)) ||
             ((gNearestPathPointByPlayerId[arg1] >= 0x14D) && (gNearestPathPointByPlayerId[arg1] < 0x15C)) ||
@@ -1096,8 +1188,14 @@ void render_light_environment_on_player(Player* player, s8 arg1) {
     }
 }
 
-void func_800235AC(Player* player, s8 arg1) {
+extern int AmpedIsScorched(int playerIndex);
+void func_800235AC(Player* player, s16 arg1) {
     s32 temp;
+    if (AmpedIsScorched(arg1)) {
+        change_player_color_effect_rgb(player, arg1, COLOR_BLACK, 0.3f);
+        change_player_color_effect_cmy(player, arg1, 0x606060, 0.3f);
+        return;
+    }
 
     if (((player->type & PLAYER_INVISIBLE_OR_BOMB) == PLAYER_INVISIBLE_OR_BOMB) && (player == gPlayerThree)) {
         change_player_color_effect_rgb(player, arg1, COLOR_LIGHT, 0.3f);
@@ -1192,7 +1290,7 @@ void func_800235AC(Player* player, s8 arg1) {
     }
 }
 
-void func_80023BF0(Player* player, s8 playerId, s8 screenId, s8 arg3) {
+void func_80023BF0(Player* player, s16 playerId, s8 screenId, s8 arg3) {
     if (((player->effects & HIT_EFFECT) == HIT_EFFECT) || ((player->effects & 0x8000000) == 0x8000000)) {
         func_80022CA8(player, playerId, screenId, arg3);
     } else {
@@ -1210,7 +1308,7 @@ Vtx gKartShadowVertices[] = {
     { { { -9, 0, 9 }, 0, { 0, 0 }, { 0xFF, 0xFF, 0xFF, 0xFF } } },
 };
 
-void render_player_shadow(Player* player, s8 playerId, s8 screenId) {
+void render_player_shadow(Player* player, s16 playerId, s8 screenId) {
     Mat4 mtx;
     UNUSED Mat4 pad;
     Vec3f spCC;
@@ -1285,7 +1383,7 @@ void render_player_shadow(Player* player, s8 playerId, s8 screenId) {
     FrameInterpolation_RecordCloseChild();
 }
 
-void render_player_shadow_credits(Player* player, s8 playerId, s8 screenId) {
+void render_player_shadow_credits(Player* player, s16 playerId, s8 screenId) {
     Mat4 mtx;
     UNUSED Mat4 pad;
     Vec3f spCC;
@@ -1340,7 +1438,7 @@ extern kart_texture_t** gKartTextureTable0[];
 extern kart_texture_t** gKartTextureTable1[];
 extern u8** gKartTextureTumbles[];
 
-void render_kart(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
+void render_kart(Player* player, s16 playerId, s8 screenId, s8 flipOffset) {
     UNUSED s32 pad;
     Mat4 mtx;
     UNUSED s32 pad2[17];
@@ -1387,6 +1485,9 @@ void render_kart(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
     }
     load_kart_palette(player, playerId, screenId, D_801651D0[screenId][playerId]);
     gPlayerPalette = &gPlayerPalettesList[D_801651D0[screenId][playerId]][screenId][playerId];
+    if (sReuseKartPalettes) {
+        gPlayerPalette = shared_kart_palette(gPlayerPalette);
+    }
     load_kart_texture(player, playerId, screenId, screenId, D_801651D0[screenId][playerId]);
     sKartTexture = gEncodedKartTexture[D_801651D0[screenId][playerId]][screenId][playerId].unk_00;
     mtxf_translate_rotate(mtx, sp154, sp14C);
@@ -1461,7 +1562,7 @@ void render_kart(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
     FrameInterpolation_RecordCloseChild();
 }
 
-void render_ghost(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
+void render_ghost(Player* player, s16 playerId, s8 screenId, s8 flipOffset) {
     UNUSED s32 pad;
     Mat4 mtx;
     UNUSED s32 pad2[17];
@@ -1528,7 +1629,7 @@ void render_ghost(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
     FrameInterpolation_RecordCloseChild();
 }
 
-void func_80025DE8(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
+void func_80025DE8(Player* player, s16 playerId, s8 screenId, s8 flipOffset) {
     Mat4 mtx;
     Vec3f sp9C;
     Vec3s sp94;
@@ -1571,7 +1672,7 @@ void func_80025DE8(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
     FrameInterpolation_RecordCloseChild();
 }
 
-void render_player_ice_reflection(Player* player, s8 playerId, s8 screenId, s8 flipOffset) {
+void render_player_ice_reflection(Player* player, s16 playerId, s8 screenId, s8 flipOffset) {
     Mat4 mtx;
     Vec3f sp9C;
     Vec3s sp94;
@@ -1617,7 +1718,7 @@ void render_player_ice_reflection(Player* player, s8 playerId, s8 screenId, s8 f
     FrameInterpolation_RecordCloseChild();
 }
 
-void render_player(Player* player, s8 playerId, s8 screenId) {
+void render_player(Player* player, s16 playerId, s8 screenId) {
     UNUSED s32 pad[2];
     u64 temp_t1;
     s32 var_v1;
@@ -1656,7 +1757,7 @@ void render_player(Player* player, s8 playerId, s8 screenId) {
     }
 }
 
-void func_80026A48(Player* player, s8 arg1) {
+void func_80026A48(Player* player, s16 arg1) {
     f32 temp_f0;
     if (((player->effects & 0x4000) == 0x4000) && ((player->type & PLAYER_START_SEQUENCE) == 0)) {
         player->tyreSpeed += D_800DDE74[8];
@@ -1700,7 +1801,7 @@ s32 kart_uses_alternate_wheel_frames(const Player* player) {
            (player->kartProps & UNUSED_0x800) != 0;
 }
 
-void update_wheel_palette(Player* player, s8 playerId, s8 screenId, s8 arg3) {
+void update_wheel_palette(Player* player, s16 playerId, s8 screenId, s8 arg3) {
     const s16 frameId = gLastAnimFrameSelector[screenId][playerId];
     const s16 groupId = gLastAnimGroupSelector[screenId][playerId];
     const u16 character = player->characterId;

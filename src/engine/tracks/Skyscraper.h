@@ -27,10 +27,10 @@ public:
     virtual void BeginPlay() override;
     virtual void InitTrackObjects() override;
     virtual void SomeSounds() override;
-    virtual void WhatDoesThisDo(Player* player, int8_t playerId) override;
-    virtual void WhatDoesThisDoAI(Player* player, int8_t playerId) override;
+    virtual void WhatDoesThisDo(Player* player, int16_t playerId) override;
+    virtual void WhatDoesThisDoAI(Player* player, int16_t playerId) override;
     virtual void Draw(ScreenContext*) override;
     virtual void DrawCredits() override;    
-    virtual void Waypoints(Player* player, int8_t playerId) override;
+    virtual void Waypoints(Player* player, int16_t playerId) override;
     virtual void Destroy() override;
 };

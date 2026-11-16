@@ -18,6 +18,8 @@ extern const course_texture wario_stadium_textures[];
 
 class WarioStadium : public Track {
     void CopyJumbotron(s32 ulx, s32 uly, s16 portionToDraw, u16* source);
+    s32 mJumbotronFrame = -1;
+    bool mJumbotronBlank = false;
 
   public:
     // Constructor
@@ -29,8 +31,8 @@ class WarioStadium : public Track {
     virtual void BeginPlay() override;
     virtual void InitTrackObjects() override;
     virtual void SomeSounds() override;
-    virtual void WhatDoesThisDo(Player* player, int8_t playerId) override;
-    virtual void WhatDoesThisDoAI(Player* player, int8_t playerId) override;
+    virtual void WhatDoesThisDo(Player* player, int16_t playerId) override;
+    virtual void WhatDoesThisDoAI(Player* player, int16_t playerId) override;
     virtual void Draw(ScreenContext*) override;
     virtual void DrawCredits() override;
     virtual void SomeCollisionThing(Player* player, Vec3f arg1, Vec3f arg2, Vec3f arg3, f32* arg4, f32* arg5, f32* arg6,

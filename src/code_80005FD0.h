@@ -286,6 +286,7 @@ void cpu_decisions_branch_item(s32, s16*, s32);
 void func_8001ABE0(s32, CpuItemStrategyData*);
 void clear_expired_strategies(CpuItemStrategyData*);
 void cpu_use_item_strategy(s32);
+void ExtraBot_StartItemRoulette(s32 playerId, s16 fixedItem);
 
 void func_8001BE78(void);
 

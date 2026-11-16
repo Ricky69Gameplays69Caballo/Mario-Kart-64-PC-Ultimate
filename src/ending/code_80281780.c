@@ -25,6 +25,7 @@
 #include <string.h>
 #include "port/Game.h"
 #include "port/LocalMultiplayer.h"
+#include "port/ExtraRacers.h"
 
 // For init podium ceremony
 #include "ceremony_and_credits.h"
@@ -156,6 +157,7 @@ void setup_podium_ceremony(void) {
     func_80295C6C();
     debug_switch_character_ceremony_cutscene();
     func_802818BC();
+    ExtraRacers_CeremonyNative();
     CM_CleanCameras();
     spawn_players_and_cameras();
     gScreenOneCtx->camera->renderMode = RENDER_FULL_SCENE;

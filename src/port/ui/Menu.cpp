@@ -7,6 +7,7 @@
 #include <spdlog/fmt/fmt.h>
 #include <variant>
 #include <tuple>
+#include <algorithm>
 
 extern "C" {
     extern s32 gGamestateNext;
@@ -133,7 +134,9 @@ bool ModernMenuSidebarEntry(std::string label) {
     pos.x = window->WorkRect.GetCenter().x - labelSize.x / 2;
     ImRect bb = { pos - style.FramePadding, pos + labelSize + style.FramePadding };
     ImGui::ItemSize(bb, style.FramePadding.y);
-    ImGui::ItemAdd(bb, sidebarId);
+    if (!ImGui::ItemAdd(bb, sidebarId)) {
+        return false;
+    }
     bool hovered, held;
     bool pressed = ImGui::ButtonBehavior(bb, sidebarId, &hovered, &held);
     if (pressed) {
@@ -144,28 +147,6 @@ bool ModernMenuSidebarEntry(std::string label) {
                                                        : hovered         ? ImGuiCol_ButtonHovered
                                                                          : ImGuiCol_Button),
                                     3.0f);
-    UIWidgets::RenderText(pos, label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()), true);
-    return pressed;
-}
-
-bool ModernMenuHeaderEntry(std::string label) {
-    ImGuiContext& g = *GImGui;
-    ImGuiWindow* window = g.CurrentWindow;
-    ImGuiStyle& style = ImGui::GetStyle();
-    ImVec2 pos = window->DC.CursorPos;
-    const ImGuiID headerId = window->GetID(std::string(label + "##Header").c_str());
-    ImVec2 labelSize = ImGui::CalcTextSize(label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()), true);
-    ImRect bb = { pos, pos + labelSize + style.FramePadding * 2 };
-    ImGui::ItemSize(bb, style.FramePadding.y);
-    ImGui::ItemAdd(bb, headerId);
-    bool hovered, held;
-    bool pressed = ImGui::ButtonBehavior(bb, headerId, &hovered, &held);
-    window->DrawList->AddRectFilled(bb.Min, bb.Max,
-                                    ImGui::GetColorU32((held && hovered) ? ImGuiCol_ButtonActive
-                                                       : hovered         ? ImGuiCol_ButtonHovered
-                                                                         : ImGuiCol_Button),
-                                    3.0f);
-    pos += style.FramePadding;
     UIWidgets::RenderText(pos, label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()), true);
     return pressed;
 }
@@ -525,61 +506,50 @@ void Menu::DrawElement() {
         ImGui::End();
         return;
     }
-    ImGui::PushFont(GameEngine::Instance->fontStandardLargest);
     ImGuiContext& g = *GImGui;
     ImGuiWindow* window = g.CurrentWindow;
     ImGuiStyle& style = ImGui::GetStyle();
     windowHeight = window->WorkRect.GetHeight();
     windowWidth = window->WorkRect.GetWidth();
 
+    const bool autoFit = CVarGetInteger("gSettings.Menu.AutoFit", 1);
+    const auto menuExtent = static_cast<UIWidgets::MenuExtent>(
+        CVarGetInteger("gSettings.Menu.Extent", UIWidgets::MenuExtent::Condensed));
+    ImVec2 menuSize = { std::fminf(1280, windowWidth), std::fminf(800, windowHeight) };
+    const float userScale = std::clamp(CVarGetFloat("gSettings.Menu.Scale", 1.0f), .75f, 2.f);
+    if (autoFit) {
+        menuSize = { .96f * windowWidth, .94f * windowHeight };
+        const float fitScale = std::clamp(std::min(menuSize.x / 1280.f, menuSize.y / 800.f), .75f, 2.5f);
+        uiScale = std::clamp(fitScale * userScale, .75f, 3.f);
+    } else {
+        if (menuExtent == UIWidgets::MenuExtent::Stretched)
+            menuSize = { .9f * windowWidth, .9f * windowHeight };
+        uiScale = userScale;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    const float previousFontScale = io.FontGlobalScale;
+    io.FontGlobalScale = uiScale;
+    // Push after changing scale so this frame's header measurements agree
+    // with the content fonts, including immediately after a window resize.
+    ImGui::PushFont(GameEngine::Instance->fontStandardLargest);
+
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 8.0f));
     const char* headerCvar = "gSettings.Menu.ActiveHeader";
     std::string headerIndex = CVarGetString(headerCvar, "Settings");
+    if (!menuEntries.contains(headerIndex)) {
+        headerIndex = menuOrder.front();
+    }
     ImVec2 pos = window->DC.CursorPos;
-    float centerX = pos.x + windowWidth / 2 - (style.ItemSpacing.x * (menuEntries.size() + 1));
-    std::vector<ImVec2> headerSizes;
-    float headerWidth = style.ItemSpacing.x;
-    bool headerSearch = !CVarGetInteger("gSettings.Menu.SidebarSearch", 0);
-    if (headerSearch) {
-        headerWidth += 200.0f + style.ItemSpacing.x + style.FramePadding.x;
-    }
-    for (auto& label : menuOrder) {
-        ImVec2 size = ImGui::CalcTextSize(label.c_str());
-        headerSizes.push_back(size);
-        headerWidth += size.x + style.FramePadding.x * 2;
-        if (label == headerIndex) {
-            headerWidth += style.ItemSpacing.x;
-        }
-    }
-
-    ImVec2 menuSize = { std::fminf(1280, windowWidth), std::fminf(800, windowHeight) };
-    UIWidgets::MenuExtent menuExtent = static_cast<UIWidgets::MenuExtent>(
-        CVarGetInteger("gSettings.Menu.Extent", UIWidgets::MenuExtent::Condensed)
-    );
-
-    if (menuExtent == UIWidgets::MenuExtent::Stretched) {
-        menuSize = { 0.9f * windowWidth, 0.9f * windowHeight };
-        uiScale = CVarGetFloat("gSettings.Menu.Scale", 1.0f);
-    } else {
-        uiScale = 1.0f; // Scaling doesn't play nice with condensed menu
-    }
-    ImGuiIO& io = ImGui::GetIO();
-    io.FontGlobalScale = uiScale;
+    const bool headerSearch = !CVarGetInteger("gSettings.Menu.SidebarSearch", 0);
 
     pos += window->WorkRect.GetSize() / 2 - menuSize / 2;
     ImGui::SetNextWindowPos(pos);
     ImGui::BeginChild("Menu Block", menuSize,
-                      ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize,
+                      ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar);
 
-    std::unordered_map<std::string, SidebarEntry>* sidebar;
-    float headerHeight = headerSizes.at(0).y + style.FramePadding.y * 2;
-    ImVec2 buttonSize = ImGui::CalcTextSize(ICON_FA_TIMES_CIRCLE) + style.FramePadding * 2;
-    bool scrollbar = false;
-    if (headerWidth > menuSize.x - buttonSize.x * 3 - style.ItemSpacing.x * 3) {
-        headerHeight += style.ScrollbarSize;
-        scrollbar = true;
-    }
+    const float headerHeight = ImGui::GetFrameHeight();
+    const ImVec2 buttonSize = ImGui::CalcTextSize(ICON_FA_TIMES_CIRCLE) + style.FramePadding * 2;
     UIWidgets::ButtonOptions options = {};
     options.size = UIWidgets::Sizes::Inline;
     options.tooltip = "Close Menu (Esc)";
@@ -595,67 +565,27 @@ void Menu::DrawElement() {
             mImGuiIo->ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
         }
     }
-    ImGui::SameLine();
-    ImGui::SetNextWindowSizeConstraints({ 0, headerHeight }, { headerWidth, headerHeight });
-    ImVec2 headerSelSize = { menuSize.x - buttonSize.x * 3 - style.ItemSpacing.x * 3, headerHeight };
-    if (scrollbar) {
-        headerSelSize.y += style.ScrollbarSize;
-    }
-    bool autoFocus = CVarGetInteger("gSettings.Menu.SearchAutofocus", 0);
-    ImGui::BeginChild("Header Selection", headerSelSize,
-                      ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize,
-                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_HorizontalScrollbar);
-    uint8_t curIndex = 0;
-    for (auto& label : menuOrder) {
-        if (curIndex != 0) {
-            ImGui::SameLine();
-        }
-        auto& entry = menuEntries.at(label);
-        std::string nextIndex = label;
-        UIWidgets::PushStyleButton(menuThemeIndex);
-        if (headerIndex != label) {
-            ImGui::PushStyleColor(ImGuiCol_Button, { 0, 0, 0, 0 });
-        }
-        if (ModernMenuHeaderEntry(entry.label)) {
-            if (headerSearch) {
-                menuSearch.Clear();
-            }
-            CVarSetString(headerCvar, label.c_str());
-            CVarSave();
-            nextIndex = label;
-        }
-        if (headerIndex != label) {
-            ImGui::PopStyleColor();
-        }
-        UIWidgets::PopStyleButton();
-        if (headerIndex == label) {
-            sidebar = &entry.sidebars;
-        }
-        if (nextIndex != label) {
-            headerIndex = nextIndex;
-        }
-        curIndex++;
-    }
-    std::string menuSearchText = "";
+    std::string menuSearchText;
     if (headerSearch) {
         ImGui::SameLine();
-        if (autoFocus && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ImGui::IsAnyItemActive() &&
-            !ImGui::IsMouseClicked(0)) {
+        const float searchWidth = std::clamp(menuSize.x - buttonSize.x * 3 - style.ItemSpacing.x * 5, 1.f, 200.f);
+        if (CVarGetInteger("gSettings.Menu.SearchAutofocus", 0) &&
+            ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            !ImGui::IsAnyItemActive() && !ImGui::IsMouseClicked(0)) {
             ImGui::SetKeyboardFocusHere(0);
         }
         auto color = UIWidgets::ColorValues.at(menuThemeIndex);
         color.w = 0.2f;
         ImGui::PushStyleColor(ImGuiCol_FrameBg, color);
-        menuSearch.Draw("##search", 200.0f);
+        menuSearch.Draw("##search", searchWidth);
         menuSearchText = menuSearch.InputBuf;
         menuSearchText.erase(std::remove(menuSearchText.begin(), menuSearchText.end(), ' '), menuSearchText.end());
-        if (menuSearchText.length() < 1) {
-            ImGui::SameLine(headerWidth - 200.0f + style.ItemSpacing.x);
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 0.4f), "Search...");
+        if (menuSearchText.empty()) {
+            const ImVec2 hintPos = ImGui::GetItemRectMin() + style.FramePadding;
+            ImGui::GetWindowDrawList()->AddText(hintPos, ImGui::GetColorU32(ImVec4(1, 1, 1, 0.4f)), "Search...");
         }
         ImGui::PopStyleColor();
     }
-    ImGui::EndChild();
     ImGui::SameLine(menuSize.x - (buttonSize.x * 2) - style.ItemSpacing.x);
     UIWidgets::ButtonOptions options2 = {};
     options2.color = UIWidgets::Colors::Red;
@@ -678,49 +608,52 @@ void Menu::DrawElement() {
     ImGui::PopStyleVar();
 
     pos.y += headerHeight + style.ItemSpacing.y;
-    pos.x = centerX - menuSize.x / 2 + (style.ItemSpacing.x * (menuEntries.size() + 1));
     window->DrawList->AddRectFilled(pos, pos + ImVec2{ menuSize.x, 4 }, ImGui::GetColorU32({ 255, 255, 255, 255 }),
                                     true, style.WindowRounding);
     pos.y += style.ItemSpacing.y;
     float sectionHeight = menuSize.y - headerHeight - 4 - style.ItemSpacing.y * 2;
     float columnHeight = sectionHeight - style.ItemSpacing.y * 4;
     ImGui::SetNextWindowPos(pos + style.ItemSpacing * 2);
-    float sidebarWidth = 200 * uiScale - style.ItemSpacing.x;
-
-    const char* sidebarCvar = menuEntries.at(headerIndex).sidebarCvar;
-
-    std::string sectionIndex = CVarGetString(sidebarCvar, "");
-    if (!sidebar->contains(sectionIndex)) {
-        sectionIndex = sidebar->begin()->first;
+    const float sidebarWidth = std::min(235.f * uiScale, menuSize.x * 0.42f);
+    const float sectionCenterX = pos.x + sidebarWidth / 2;
+    const float topY = pos.y;
+    auto& activeEntry = menuEntries.at(headerIndex);
+    std::string sectionIndex = CVarGetString(activeEntry.sidebarCvar, "");
+    if (!activeEntry.sidebars.contains(sectionIndex)) {
+        sectionIndex = activeEntry.sidebarOrder.front();
     }
-    float sectionCenterX = pos.x + (sidebarWidth / 2);
-    float topY = pos.y;
-    ImGui::SetNextWindowSizeConstraints({ sidebarWidth, 0 }, { sidebarWidth, columnHeight });
-    ImGui::BeginChild((menuEntries.at(headerIndex).label + " Section").c_str(), { sidebarWidth, columnHeight * 3 },
-                      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize, ImGuiWindowFlags_NoTitleBar);
-    for (auto& sidebarLabel : menuEntries.at(headerIndex).sidebarOrder) {
-        std::string nextIndex = "";
-        UIWidgets::PushStyleButton(menuThemeIndex);
-        if (sectionIndex != sidebarLabel) {
-            ImGui::PushStyleColor(ImGuiCol_Button, { 0, 0, 0, 0 });
-        }
-        if (ModernMenuSidebarEntry(sidebarLabel)) {
-            if (headerSearch) {
-                menuSearch.Clear();
+
+    ImGui::BeginChild("Menu Navigation", { sidebarWidth, columnHeight });
+    for (const auto& category : menuOrder) {
+        const auto& entry = menuEntries.at(category);
+        ImGui::PushID(category.c_str());
+        ImGui::SeparatorText(entry.label.c_str());
+        for (const auto& label : entry.sidebarOrder) {
+            const bool selected = category == headerIndex && label == sectionIndex;
+            UIWidgets::PushStyleButton(menuThemeIndex);
+            if (!selected) {
+                ImGui::PushStyleColor(ImGuiCol_Button, { 0, 0, 0, 0 });
             }
-            CVarSetString(sidebarCvar, sidebarLabel.c_str());
-            CVarSave();
-            nextIndex = sidebarLabel;
+            if (ModernMenuSidebarEntry(label)) {
+                if (headerSearch) {
+                    menuSearch.Clear();
+                    menuSearchText.clear();
+                }
+                headerIndex = category;
+                sectionIndex = label;
+                CVarSetString(headerCvar, category.c_str());
+                CVarSetString(entry.sidebarCvar, label.c_str());
+                CVarSave();
+            }
+            if (!selected) {
+                ImGui::PopStyleColor();
+            }
+            UIWidgets::PopStyleButton();
         }
-        if (sectionIndex != sidebarLabel) {
-            ImGui::PopStyleColor();
-        }
-        UIWidgets::PopStyleButton();
-        if (nextIndex != "") {
-            sectionIndex = nextIndex;
-        }
+        ImGui::PopID();
     }
     ImGui::EndChild();
+    auto* sidebar = &menuEntries.at(headerIndex).sidebars;
 
     ImGui::PushFont(GameEngine::Instance->fontMonoLarger);
     pos = ImVec2{ sectionCenterX + (sidebarWidth / 2), topY } + style.ItemSpacing * 2;
@@ -729,10 +662,10 @@ void Menu::DrawElement() {
     pos.x += 4 + style.ItemSpacing.x;
     ImGui::SetNextWindowPos(pos + style.ItemSpacing);
     float sectionWidth = menuSize.x - sidebarWidth - 4 - style.ItemSpacing.x * 4;
-    std::string sectionMenuId = sectionIndex + " Settings";
+    std::string sectionMenuId = headerIndex + " / " + sectionIndex;
     int columns = sidebar->at(sectionIndex).columnCount;
     size_t columnFuncs = sidebar->at(sectionIndex).columnWidgets.size();
-    if (windowWidth < 800) {
+    if (sectionWidth < 320.f * uiScale * columns) {
         columns = 1;
     }
     float columnWidth = (sectionWidth - style.ItemSpacing.x * columns) / columns;
@@ -757,8 +690,6 @@ void Menu::DrawElement() {
         if (UIWidgets::Button("Clear Search", clearBtnOpts)) {
             menuSearch.Clear();
         }
-
-        ImGui::EndChild();
     } else {
         std::string menuLabel = menuEntries.at(headerIndex).label;
         if (MenuInit::GetUpdateFuncs().contains(menuLabel)) {
@@ -794,6 +725,7 @@ void Menu::DrawElement() {
         ImGui::EndChild();
     }
     ImGui::PopFont();
+    io.FontGlobalScale = previousFontScale;
     ImGui::PopFont();
 
     if (!popout) {

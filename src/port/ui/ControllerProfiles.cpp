@@ -1,4 +1,5 @@
 #include "ControllerProfiles.h"
+#include "DefaultControllerProfiles.h"
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 #include <array>
@@ -40,16 +41,12 @@ std::string FoldName(std::string name) {
     for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return name;
 }
-Json Library() {
-    auto root = Ship::Context::GetRawInstance()->GetConfig()->GetNestedJson();
-    if (!root.contains("ControllerProfiles")) return Json::array();
-    const auto& block = root["ControllerProfiles"];
-    if (!block.is_object() || block.value("Version", 0) != 1 ||
-        !block.contains("Profiles") || !block["Profiles"].is_array()) return Json::array();
-    return block["Profiles"];
-}
+constexpr int defaultProfilesVersion = 1;
+
 void SaveLibrary(const Json& library) {
-    Ship::Context::GetRawInstance()->GetConfig()->SetBlock("ControllerProfiles", {{"Version", 1}, {"Profiles", library}});
+    Ship::Context::GetRawInstance()->GetConfig()->SetBlock("ControllerProfiles", {
+        {"Version", 1}, {"DefaultProfilesVersion", defaultProfilesVersion}, {"Profiles", library}
+    });
 }
 int Find(const Json& library, const std::string& name) {
     for (int i = 0; i < static_cast<int>(library.size()); ++i) {
@@ -57,6 +54,29 @@ int Find(const Json& library, const std::string& name) {
             FoldName(library[i]["Name"].get<std::string>()) == FoldName(name)) return i;
     }
     return -1;
+}
+Json Library() {
+    const auto root = Ship::Context::GetRawInstance()->GetConfig()->GetNestedJson();
+    const auto block = root.value("ControllerProfiles", Json::object());
+    Json library = Json::array();
+    if (block.is_object() && block.value("Version", 0) == 1 &&
+        block.contains("Profiles") && block["Profiles"].is_array()) {
+        library = block["Profiles"];
+    }
+    if (!block.is_object() || block.value("DefaultProfilesVersion", 0) < defaultProfilesVersion) {
+        const auto addDefault = [&](const Json& profile) {
+            if (Find(library, profile.at("Name").get<std::string>()) < 0) library.push_back(profile);
+        };
+        for (const char* data : kDefaultControllerProfiles) addDefault(Json::parse(data));
+        // SDL normalizes these controllers to the same positional button and stick layout.
+        auto gamepad = Json::parse(kDefaultControllerProfiles[0]);
+        for (const char* name : {"PS4 DualShock 4", "PS5 DualSense", "Nintendo Switch Pro"}) {
+            gamepad["Name"] = name;
+            addDefault(gamepad);
+        }
+        SaveLibrary(library);
+    }
+    return library;
 }
 bool OwnsId(const std::string& id, int port) {
     const auto prefix = "P" + std::to_string(port);

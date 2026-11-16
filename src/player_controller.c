@@ -1,8 +1,16 @@
 #include "port/LocalMultiplayer.h"
+#include "port/NativeFrameMotion.h"
+#include "port/NativeFrameAcceleration.h"
+#include "port/NativeFrameHop.h"
+#include "port/NativeFrameClock.h"
+#include "port/NativeFrameAngle.h"
+#include "port/NativeFrameSmoothing.h"
+#include "port/NativeFrameCollision.h"
 #include <libultraship.h>
 #include <macros.h>
 #include <defines.h>
 #include <mk64.h>
+#include <stdio.h>
 
 #include "player_controller.h"
 #include "code_800029B0.h"
@@ -24,6 +32,14 @@
 #include "port/Game.h"
 #include "src/enhancements/moon_jump.h"
 #include "engine/Matrix.h"
+#include "port/Engine.h"
+
+static void native_player_move_towards(f32* value, f32 target, f32 weight) {
+    if (gNativeSimulationTickScale != 1.0f) {
+        weight = (f32) NativeFrameSmoothingWeight(weight, gNativeSimulationTickScale);
+    }
+    move_f32_towards(value, target, weight);
+}
 
 extern s32 D_8018D168;
 
@@ -192,7 +208,19 @@ s32 get_player_index_for_player(Player* player) {
     return (s32) (player - gPlayers);
 }
 
-void func_80027DA8(Player* player, s8 playerId) {
+static void native_apply_yaw_delta(Player* player, s32 delta) {
+    static f64 remainders[NUM_RACERS] = {0};
+    const s32 index = get_player_index_for_player(player);
+    if (index < 0 || index >= NUM_RACERS) return;
+    if (gNativeSimulationTickScale == 1.0f) {
+        remainders[index] = 0.0;
+        player->rotation[1] += delta;
+    } else {
+        player->rotation[1] += NativeFrameAngleStep(delta, gNativeSimulationTickScale, &remainders[index]);
+    }
+}
+
+void func_80027DA8(Player* player, s16 playerId) {
     if (D_8015F890 != 1) {
         if ((player->type & PLAYER_UNKNOWN_0x10) != PLAYER_UNKNOWN_0x10) {
             if (((D_8018D168 == 1) && ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN)) && ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
@@ -214,7 +242,7 @@ void func_80027DA8(Player* player, s8 playerId) {
     }
 }
 
-void func_80027EDC(Player* player, s8 playerId) {
+void func_80027EDC(Player* player, s16 playerId) {
     UNUSED s32 pad;
     if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
         ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
@@ -277,7 +305,7 @@ u16 check_player_camera_collision_rubberbanding(Player* player, Camera* camera, 
     return ret;
 }
 
-void func_80028864(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+void func_80028864(Player* player, Camera* camera, s16 playerId, s8 screenId) {
     u16 sp1E;
 
     if (!(player->type & PLAYER_START_SEQUENCE)) {
@@ -348,7 +376,7 @@ void func_80028864(Player* player, Camera* camera, s8 playerId, s8 screenId) {
     }
 }
 
-void func_80028C44(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+void func_80028C44(Player* player, Camera* camera, s16 playerId, s8 screenId) {
     if ((player->type & PLAYER_START_SEQUENCE) == 0) {
         player->effects &= ~0x1000;
         if (((player->effects & 0x80) == 0x80) || ((player->effects & 0x40) == 0x40) ||
@@ -366,7 +394,7 @@ void func_80028C44(Player* player, Camera* camera, s8 playerId, s8 screenId) {
     }
 }
 
-void func_80028D3C(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+void func_80028D3C(Player* player, Camera* camera, s16 playerId, s8 screenId) {
     if ((((player->type & PLAYER_START_SEQUENCE) == 0) && (gRaceState != RACE_FINISHED)) ||
         (player->lakituProps & HELD_BY_LAKITU) != 0 || (player->lakituProps & LAKITU_SCENE) != 0 || (player->effects & 0x4F010CC0) != 0) {
         player->effects &= ~0x1000;
@@ -386,7 +414,7 @@ void func_80028D3C(Player* player, Camera* camera, s8 playerId, s8 screenId) {
     }
 }
 
-void func_80028E70(Player* player, Camera* camera, s8 playerId, s8 screenId) {
+void func_80028E70(Player* player, Camera* camera, s16 playerId, s8 screenId) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         switch (gGamestate) {
             case ENDING:
@@ -426,7 +454,7 @@ void func_80028E70(Player* player, Camera* camera, s8 playerId, s8 screenId) {
 void func_80028F70(void) {
     if (LocalMP_IsActive()) {
         gMatrixEffectCount = 0;
-        for (s8 i = 0; i < LocalMP_RacerCount(); i++) {
+        for (s32 i = 0; i < LocalMP_RacerCount(); i++) {
             if (!LocalMP_IsFinished(i) || LocalMP_CanCoastAfterFinish(i))
                 func_80028E70(&gPlayers[i], i < LocalMP_Count() ? &cameras[i] : camera1, i, 0);
         }
@@ -472,7 +500,7 @@ void func_80029200(Player* player, s8 screenId) {
     }
 }
 
-void func_8002934C(Player* player, Camera* camera, s8 screenId, s8 playerId) {
+void func_8002934C(Player* player, Camera* camera, s8 screenId, s16 playerId) {
     UNUSED s32 pad[2];
     f32 temp_f0;
     f32 temp_f2;
@@ -685,16 +713,16 @@ void func_80029B4C(Player* player, UNUSED f32 arg1, f32 arg2, UNUSED f32 arg3) {
     player_terrain_collision(player, &player->tyres[BACK_RIGHT], sp80[0], sp80[1], sp80[2]);
     if (!(player->effects & 8)) {
         a = (player->tyres[BACK_LEFT].baseHeight + player->tyres[FRONT_LEFT].baseHeight) / 2;
-        move_f32_towards(&player->unk_230, a, 0.5f);
+        native_player_move_towards(&player->unk_230, a, 0.5f);
 
         b = (player->tyres[BACK_RIGHT].baseHeight + player->tyres[FRONT_RIGHT].baseHeight) / 2;
-        move_f32_towards(&player->unk_23C, b, 0.5f);
+        native_player_move_towards(&player->unk_23C, b, 0.5f);
 
         c = (player->tyres[FRONT_RIGHT].baseHeight + player->tyres[FRONT_LEFT].baseHeight) / 2;
-        move_f32_towards(&player->unk_1FC, c, 0.5f);
+        native_player_move_towards(&player->unk_1FC, c, 0.5f);
 
         d = (player->tyres[BACK_RIGHT].baseHeight + player->tyres[BACK_LEFT].baseHeight) / 2;
-        move_f32_towards(&player->unk_1F8, d, 0.5f);
+        native_player_move_towards(&player->unk_1F8, d, 0.5f);
     }
     temp_f2_3 = ((gCharacterSize[player->characterId] * 18.0f) + 1.0f) * player->size;
     temp_f0_2 = player->unk_23C - player->unk_230;
@@ -719,6 +747,11 @@ void func_80029B4C(Player* player, UNUSED f32 arg1, f32 arg2, UNUSED f32 arg3) {
         player->slopeAccel = (s16) ((s32) player->unk_D9C);
     }
     player->surfaceType = get_surface_type(player->collision.meshIndexZX) & 0xFF;
+    if (player->surfaceType == CUSTOM_MUSHROOM_BOOST && !(player->effects & BOOST_EFFECT) &&
+        !(player->effects & 8)) {
+        player->triggers |= SHROOM_TRIGGER;
+    }
+
     if (player->surfaceType == BOOST_RAMP_ASPHALT) {
         if (((player->effects & BOOST_RAMP_ASPHALT_EFFECT) != BOOST_RAMP_ASPHALT_EFFECT) &&
             ((player->effects & 8) != 8)) {
@@ -779,6 +812,11 @@ void func_8002A194(Player* player, f32 x, f32 y, f32 z) {
       player->unk_1F8 = (player->tyres[BACK_RIGHT].baseHeight + player->tyres[BACK_LEFT].baseHeight) / 2;
   }
   player->surfaceType = (u8) get_surface_type(player->collision.meshIndexZX);
+    if (player->surfaceType == CUSTOM_MUSHROOM_BOOST && !(player->effects & BOOST_EFFECT) &&
+        !(player->effects & 8)) {
+        player->triggers |= SHROOM_TRIGGER;
+    }
+
   player->tyres[BACK_RIGHT].surfaceType = player->surfaceType;
   player->tyres[BACK_LEFT].surfaceType = player->surfaceType;
   player->tyres[FRONT_RIGHT].surfaceType = player->surfaceType;
@@ -851,7 +889,7 @@ void func_8002A5F4(Vec3f arg0, f32 arg1, Vec3f arg2, f32 arg3, f32 arg4) {
     }
 }
 
-void func_8002A704(Player* player, s8 arg1) {
+void func_8002A704(Player* player, s16 arg1) {
     player->effects |= BOOST_EFFECT;
     player->triggers &= ~START_BOOST_TRIGGER;
     if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
@@ -862,7 +900,7 @@ void func_8002A704(Player* player, s8 arg1) {
     player->boostTimer = 0x0050;
 }
 
-void func_8002A79C(Player* player, s8 arg1) {
+void func_8002A79C(Player* player, s16 arg1) {
     if (((player->effects & 0x100) != 0x100) && ((player->effects & DRIFTING_EFFECT) != DRIFTING_EFFECT) &&
         (player->driftState >= 2)) {
         player->effects |= 0x100;
@@ -887,7 +925,7 @@ void func_8002A79C(Player* player, s8 arg1) {
     }
 }
 
-void func_8002A8A4(Player* player, s8 arg1) {
+void func_8002A8A4(Player* player, s16 arg1) {
     if (((s16) player->unk_0C0 / 182) > 0) {
         if (((s32) player->unk_07C >> 0x10) < -9) {
             if (player->unk_228 < 0x65) {
@@ -958,7 +996,24 @@ void kart_hop(Player* player) {
 
   * kartHopAcceleration is restricted to values in [-9.0f, 9.0f]
 **/
-void func_8002AAC0(Player* player) {
+f32 func_8002AAC0(Player* player) {
+    if (gNativeSimulationTickScale != 1.0f) {
+        int stopped;
+        NativeFrameHop hop = NativeFrameHop_AdvanceToApex(player->kartHopAcceleration, player->kartHopVelocity,
+                                                          player->kartHopJerk, gNativeSimulationTickScale, &stopped);
+        player->kartHopAcceleration = (f32) hop.acceleration;
+        if (player->kartHopAcceleration > 9.0f) player->kartHopAcceleration = 9.0f;
+        if (player->kartHopAcceleration < -9.0f) player->kartHopAcceleration = -9.0f;
+        player->kartHopVelocity = (f32) hop.velocity;
+        if (player->kartHopVelocity >= 15.0f) player->kartHopVelocity = 15.0f;
+        if (stopped || player->kartHopVelocity <= 0.0f) {
+            player->kartHopJerk = 0.0f;
+            player->kartHopAcceleration = 0.0f;
+            player->kartHopVelocity = 0.0f;
+        }
+        // Ceiling clamp crossings and collisions still need separate tests.
+        return (f32) hop.displacement;
+    }
     player->kartHopAcceleration -= player->kartHopJerk;
     if (player->kartHopAcceleration >= 9.0f) {
         player->kartHopAcceleration = 9.0f;
@@ -978,6 +1033,7 @@ void func_8002AAC0(Player* player) {
         player->kartHopAcceleration = 0.0f;
         player->kartHopVelocity = 0.0f;
     }
+    return player->kartHopVelocity;
 }
 
 void func_8002AB70(Player* player) {
@@ -985,29 +1041,29 @@ void func_8002AB70(Player* player) {
     if (((player->effects & 8) != 8) && (player->kartPropulsionStrength > 0.0f)) {
         if (((player->slopeAccel / 182) < -1) && ((player->slopeAccel / 182) >= -0x14) &&
             (((player->speed / 18.0f) * 216.0f) >= 20.0f)) {
-            move_f32_towards(&player->kartGravity, 500.0f, 1.0f);
-            move_f32_towards(&player->unk_DAC, 3.0f, 0.05f);
+            native_player_move_towards(&player->kartGravity, 500.0f, 1.0f);
+            native_player_move_towards(&player->unk_DAC, 3.0f, 0.05f);
         } else {
-            move_f32_towards(&player->kartGravity, gKartGravityTable[player->characterId], 0.1f);
-            move_f32_towards(&player->unk_DAC, 1.0f, 0.07f);
+            native_player_move_towards(&player->kartGravity, gKartGravityTable[player->characterId], 0.1f);
+            native_player_move_towards(&player->unk_DAC, 1.0f, 0.07f);
         }
     } else {
         if (player->collision.surfaceDistance[2] >= 50.0f) {
             player->unk_DAC = 2.0f;
         }
-        move_f32_towards(&player->kartGravity, gKartGravityTable[player->characterId], 0.02f);
+        native_player_move_towards(&player->kartGravity, gKartGravityTable[player->characterId], 0.02f);
         if ((player->effects & 2) == 2) {
-            move_f32_towards(&player->unk_DAC, 1.0f, 0.07f);
+            native_player_move_towards(&player->unk_DAC, 1.0f, 0.07f);
         } else {
-            move_f32_towards(&player->unk_DAC, 1.0f, 0.07f);
+            native_player_move_towards(&player->unk_DAC, 1.0f, 0.07f);
         }
     }
     if ((player->effects & BOOST_RAMP_ASPHALT_EFFECT) == BOOST_RAMP_ASPHALT_EFFECT) {
-        move_f32_towards(&player->unk_DAC, 20.0f, 1.0f);
+        native_player_move_towards(&player->unk_DAC, 20.0f, 1.0f);
         player->kartGravity = 3500.0f;
     }
     if ((player->effects & BOOST_RAMP_WOOD_EFFECT) == BOOST_RAMP_WOOD_EFFECT) {
-        move_f32_towards(&player->unk_DAC, 25.0f, 1.0f);
+        native_player_move_towards(&player->unk_DAC, 25.0f, 1.0f);
         player->kartGravity = 1800.0f;
     }
     if ((player->effects & 0x400) == 0x400) {
@@ -1039,7 +1095,7 @@ UNUSED void func_8002AE28(void) {
 UNUSED void func_8002AE30(void) {
 }
 
-void func_8002AE38(Player* player, s8 arg1, f32 arg2, f32 arg3, f32 arg4, f32 arg5) {
+void func_8002AE38(Player* player, s16 arg1, f32 arg2, f32 arg3, f32 arg4, f32 arg5) {
     UNUSED s32 pad[4];
     s16 temp_v0_3;
     f32 sp28;
@@ -1118,7 +1174,7 @@ void func_8002B218(Player* player) {
     }
 }
 
-void apply_triggers(Player* player, s8 playerId, UNUSED s8 screenId) {
+void apply_triggers(Player* player, s16 playerId, UNUSED s8 screenId) {
     if ((player->triggers & HIGH_TUMBLE_TRIGGER) == HIGH_TUMBLE_TRIGGER) {
         trigger_high_tumble(player, playerId);
     }
@@ -1175,7 +1231,7 @@ void apply_triggers(Player* player, s8 playerId, UNUSED s8 screenId) {
     }
 }
 
-void func_8002B5C0(Player* player, UNUSED s8 playerId, UNUSED s8 screenId) {
+void func_8002B5C0(Player* player, UNUSED s16 playerId, UNUSED s8 screenId) {
     if (((player->lakituProps & LAKITU_SCENE) != 0) || ((player->lakituProps & HELD_BY_LAKITU) != 0)) {
         player->triggers &= ALL_TRIGGERS & ~(HIT_TRIGGERS | ANY_BOOST_TRIGGERS | RACING_SPINOUT_TRIGGERS | STATE_TRANSITION_TRIGGERS);
     }
@@ -1244,7 +1300,7 @@ void func_8002B5C0(Player* player, UNUSED s8 playerId, UNUSED s8 screenId) {
     }
 }
 
-void func_8002B830(Player* player, s8 playerId, s8 screenId) {
+void func_8002B830(Player* player, s16 playerId, s8 screenId) {
     if (player->triggers != 0) {
         func_8002B5C0(player, playerId, screenId);
     }
@@ -1268,7 +1324,7 @@ UNUSED void func_8002B8A4(Player* player_one, Player* player_two) {
     D_801653C0[secondPlayerIndex] = player_one;
 }
 
-void func_8002B9CC(Player* player, s8 arg1, UNUSED s32 arg2) {
+void func_8002B9CC(Player* player, s16 arg1, UNUSED s32 arg2) {
     f32 temp_f0;
     f32 temp_f2;
     f32 temp_f14;
@@ -1359,9 +1415,9 @@ void func_8002BB9C(Player* player, f32* arg1, f32* arg2, UNUSED s8 arg3, UNUSED 
     }
 
     if ((player->unk_07C >> 0x10) < 0) {
-        player->rotation[1] -= sp30[var_v0];
+        native_apply_yaw_delta(player, -sp30[var_v0]);
     } else {
-        player->rotation[1] += sp30[var_v0];
+        native_apply_yaw_delta(player, sp30[var_v0]);
     }
 }
 
@@ -1396,7 +1452,7 @@ void func_8002BD58(Player* player) {
     }
 }
 
-void func_8002BF4C(Player* player, s8 arg1) {
+void func_8002BF4C(Player* player, s16 arg1) {
     UNUSED s32 pad[3];
     UNUSED s32 uselessAssignment;
     s32 i;
@@ -1445,20 +1501,21 @@ void func_8002BF4C(Player* player, s8 arg1) {
 }
 
 void func_8002C11C(Player* player) {
+    const s32 ticks = (s32) gNativeSimulationLegacyTicks;
     if ((player->effects & DRIFTING_EFFECT) == DRIFTING_EFFECT) {
-        player->driftDuration += 1;
+        player->driftDuration += ticks;
         if (player->driftDuration >= 0x65) {
             player->driftDuration = 0x64;
         }
     } else {
-        player->driftDuration -= 1;
+        player->driftDuration -= ticks;
         if (player->driftDuration < 0) {
             player->driftDuration = 0;
         }
     }
 }
 
-void func_8002C17C(Player* player, s8 playerId) {
+void func_8002C17C(Player* player, s16 playerId) {
     if (IsYoshiValley()) {
         if ((player->collision.surfaceDistance[2] >= 600.0f) && (D_80165330[playerId] == 0)) {
             D_80165330[playerId] = 1;
@@ -1509,14 +1566,23 @@ void func_8002C17C(Player* player, s8 playerId) {
     }
 }
 
-void update_player_environment_and_hazard_state(Player* player, s8 playerIndex) {
-    gPlayerWaterLevel[playerIndex] = get_water_level(player);
-    if (player->pos[1] <= gPlayerWaterLevel[playerIndex]) { // Player is in water, at least partially
+void update_player_environment_and_hazard_state(Player* player, s16 playerIndex) {
+    if ((player->lakituProps & (LAKITU_RETRIEVAL | HELD_BY_LAKITU)) !=
+        (LAKITU_RETRIEVAL | HELD_BY_LAKITU)) {
+        gPlayerWaterLevel[playerIndex] = get_water_level(player);
+    }
+    if (player->surfaceType == CUSTOM_WATER && player->collision.surfaceDistance[2] <= 5.0f &&
+        !(player->lakituProps & HELD_BY_LAKITU)) {
+        // Custom water surfaces can sit far above the course's default water level.
+        gPlayerWaterLevel[playerIndex] = fmaxf(gPlayerWaterLevel[playerIndex],
+                                              player->pos[1] - player->boundingBoxSize);
+    }
+    if (!CM_GetProps()->DryRescue && player->pos[1] <= gPlayerWaterLevel[playerIndex]) { // Player is in water, at least partially
         player->oobProps |= PASS_OOB_OR_FLUID_LEVEL;
     } else {
         player->oobProps &= ~PASS_OOB_OR_FLUID_LEVEL;
     }
-    if (player->boundingBoxSize < (gPlayerWaterLevel[playerIndex] - player->pos[1])) {
+    if (!CM_GetProps()->DryRescue && player->boundingBoxSize < (gPlayerWaterLevel[playerIndex] - player->pos[1])) {
         // Player is fully submerged in water
         player->oobProps |= UNDER_OOB_OR_FLUID_LEVEL;
         player->oobProps &= ~PASS_OOB_OR_FLUID_LEVEL;
@@ -1524,7 +1590,7 @@ void update_player_environment_and_hazard_state(Player* player, s8 playerIndex) 
         // Player is not fully submerged in water, clear the flag
         player->oobProps &= ~UNDER_OOB_OR_FLUID_LEVEL;
     }
-    if (player->boundingBoxSize < (gPlayerWaterLevel[playerIndex] - player->pos[1])) {
+    if (!CM_GetProps()->DryRescue && player->boundingBoxSize < (gPlayerWaterLevel[playerIndex] - player->pos[1])) {
         // We confirm again that the player if fully submerged
         if ((player->oobProps & UNDER_FLUID_LEVEL) != UNDER_FLUID_LEVEL) {
             // Set flag - it will be cleared shortly after
@@ -1534,9 +1600,9 @@ void update_player_environment_and_hazard_state(Player* player, s8 playerIndex) 
             if ((!IsKoopaTroopaBeach()) && (!IsSkyscraper()) &&
                 (!IsRainbowRoad()) && ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN)) {
                 if ((IsBowsersCastle()) || (IsBigDonut())) {
-                    func_800C9060((u8) playerIndex, 0x1900801CU);
+                    func_800C9060(playerIndex, 0x1900801CU);
                 } else {
-                    func_800C9060((u8) playerIndex, 0x19008008U);
+                    func_800C9060(playerIndex, 0x19008008U);
                 }
             }
         }
@@ -1546,9 +1612,12 @@ void update_player_environment_and_hazard_state(Player* player, s8 playerIndex) 
           // Different handling for these tracks, we just use the first two (0x0001 and 0x0002)
           player->oobProps &= ~(UNDER_FLUID_LEVEL | UNDER_OOB_LEVEL);
     }
-    if ((player->boundingBoxSize < (gPlayerWaterLevel[playerIndex] - player->pos[1])) &&
-        (player->collision.surfaceDistance[2] >= 600.0f)) {
-        // We are fully submerged in water and far away from the surface (out of bounds?)
+    if (((player->boundingBoxSize < (gPlayerWaterLevel[playerIndex] - player->pos[1])) &&
+         (player->collision.surfaceDistance[2] >= 600.0f)) ||
+        (((player->surfaceType == CUSTOM_WATER && player->collision.surfaceDistance[2] <= 5.0f) ||
+          (CM_GetProps()->RescueOnWaterContact &&
+           player->pos[1] + (CM_GetProps()->DryRescue ? -player->boundingBoxSize : player->boundingBoxSize) < gPlayerWaterLevel[playerIndex])) &&
+         !(player->lakituProps & HELD_BY_LAKITU))) {
         player->lakituProps |= LAKITU_RETRIEVAL;
     }
     if (player->collision.surfaceDistance[2] >= 600.0f) {
@@ -1569,7 +1638,7 @@ void update_player_environment_and_hazard_state(Player* player, s8 playerIndex) 
     func_8002C17C(player, playerIndex);
 }
 
-void func_8002C7E4(Player* player, s8 arg1, s8 arg2) {
+void func_8002C7E4(Player* player, s16 arg1, s8 arg2) {
     if ((player->unk_046 & 1) != 1) {
         if ((player->effects & 0x8000) == 0x8000) {
             if ((player->effects & BOOST_EFFECT) != BOOST_EFFECT) {
@@ -1600,21 +1669,26 @@ void func_8002C7E4(Player* player, s8 arg1, s8 arg2) {
     }
     player->unk_046 &= ~0x0001;
     player->effects &= ~0x8000;
-    if (player->unk_10C > 0) {
+    for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && player->unk_10C > 0; ++tick) {
         player->unk_10C += 1;
-    }
-    if (player->unk_10C >= 0xA) {
-        player->unk_10C = 0;
+        if (player->unk_10C >= 0xA) player->unk_10C = 0;
     }
 }
 
-void func_8002C954(Player* player, s8 playerId, Vec3f arg2) {
+void func_8002C954(Player* player, s16 playerId, Vec3f arg2) {
     f32 temp_f0;
     f32 var_f14;
     f32 xdist;
     f32 ydist;
     f32 zdist;
 
+    if (playerId == 0 && CVarGetInteger("gExperimentalWallContactTrace", 0) &&
+        CVarGetInteger("gExperimentalNativeBenchmark", 0) && gCourseTimer > 2.0f) {
+        printf("WALL_TRACE t=%.5f d=(%.5f,%.5f) vel=(%.4f,%.4f,%.4f) flag=%x recovery=%u tick=%u\n",
+               gCourseTimer, player->collision.surfaceDistance[0], player->collision.surfaceDistance[1],
+               player->velocity[0], player->velocity[1], player->velocity[2], player->unk_046,
+               player->unk_256, gNativeSimulationLegacyTicks);
+    }
     temp_f0 = player->pos[1] - player->unk_074;
 
     if (((((player->effects & 0x10000) != 0x10000) &&
@@ -1635,11 +1709,20 @@ void func_8002C954(Player* player, s8 playerId, Vec3f arg2) {
         func_8001CA24(player, 3.0f);
     }
     player->unk_046 |= 0x10;
-    player->unk_256++;
-    if (player->unk_256 >= 0xA) {
-        player->unk_256 = 0;
+    for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks; ++tick) {
+        player->unk_256++;
+        if (player->unk_256 >= 0xA) player->unk_256 = 0;
     }
-    if ((player->slopeAccel >= 0) && (((player->speed / 18.0f) * 216.0f) > 5.0f)) {
+    if (playerId == 0 && CVarGetInteger("gExperimentalBenchmarkSolo", 0) &&
+        CVarGetInteger("gExperimentalNativeBenchmark", 0)) {
+        printf("NATIVE_CONTACT t=%.4f scale=%.5f current=%.3f speed=%.3f slope=%d floorNormalY=%.6f floorDistance=%.4f effects=%x\n",
+               gCourseTimer, gNativeSimulationTickScale, player->currentSpeed, player->speed, player->slopeAccel,
+               player->collision.orientationVector[1], player->collision.surfaceDistance[2], player->effects);
+    }
+    const bool flatGroundContact = NativeFrameCollision_FlatGroundContact(
+        GameEngine_IsExperimentalNativeRace(), player->slopeAccel, player->collision.orientationVector[1],
+        player->collision.surfaceDistance[2]);
+    if ((player->slopeAccel >= 0 || flatGroundContact) && (((player->speed / 18.0f) * 216.0f) > 5.0f)) {
         player_decelerate_alternative(player, 18.0f);
     }
     if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
@@ -1669,71 +1752,159 @@ void func_8002C954(Player* player, s8 playerId, Vec3f arg2) {
     }
 }
 
-void apply_effect(Player* player, s8 arg1, s8 arg2) {
+void apply_effect(Player* player, s16 arg1, s8 arg2) {
     if (((player->lakituProps & HELD_BY_LAKITU) == HELD_BY_LAKITU) || ((player->lakituProps & LAKITU_SCENE) == LAKITU_SCENE)) {
-        func_80090970(player, arg1, arg2);
+        if (gNativeSimulationLegacyTicks == 0) {
+            player->unk_0C2 = 0xC;
+            player->unk_078 = player->unk_07C = player->unk_0C0 = 0;
+            player->kartPropulsionStrength = 0.0f;
+        }
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks &&
+             (player->lakituProps & (HELD_BY_LAKITU | LAKITU_SCENE)); ++tick) {
+            func_80090970(player, arg1, arg2);
+        }
     }
     if ((player->effects & 0x800) == 0x800) {
-        func_8008CEB0(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x800); ++tick) {
+            func_8008CEB0(player, arg1);
+        }
     }
     if (player->kartProps & DRIVING_SPINOUT) {
-        func_8008D170(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->kartProps & DRIVING_SPINOUT); ++tick) {
+            func_8008D170(player, arg1);
+        }
     }
     if ((player->effects & BOOST_EFFECT) == BOOST_EFFECT) {
-        apply_boost_effect(player);
+        if (gNativeSimulationLegacyTicks == 0) player->currentSpeed = player->topSpeed;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & BOOST_EFFECT); ++tick) {
+            apply_boost_effect(player);
+        }
     }
     if ((player->effects & BOOST_RAMP_ASPHALT_EFFECT) == BOOST_RAMP_ASPHALT_EFFECT) {
-        apply_boost_ramp_asphalt_effect(player);
+        if (gNativeSimulationLegacyTicks == 0) player->currentSpeed = player->unk_256 ? 0.0f : player->topSpeed;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & BOOST_RAMP_ASPHALT_EFFECT); ++tick) {
+            apply_boost_ramp_asphalt_effect(player);
+        }
     }
     if ((player->effects & BOOST_RAMP_WOOD_EFFECT) == BOOST_RAMP_WOOD_EFFECT) {
-        apply_boost_ramp_wood_effect(player);
+        if (gNativeSimulationLegacyTicks == 0) player->currentSpeed = gTopSpeedTable[0][player->characterId];
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & BOOST_RAMP_WOOD_EFFECT); ++tick) {
+            apply_boost_ramp_wood_effect(player);
+        }
     }
     if ((s32) (player->effects & HIT_EFFECT) == HIT_EFFECT) {
-        apply_hit_effect(player, arg1);
+        if (gNativeSimulationLegacyTicks == 0) {
+            player->unk_0C2 = player->unk_0A8 = player->unk_07C = player->unk_0C0 = 0;
+            player->kartPropulsionStrength = player->currentSpeed = 0.0f;
+        }
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & HIT_EFFECT); ++tick) {
+            apply_hit_effect(player, arg1);
+        }
     }
     if ((player->effects & LIGHTNING_EFFECT) == LIGHTNING_EFFECT) {
-        apply_lightning_effect(player, arg1);
+        // Lightning combines exact rotation thresholds, an integer shrink
+        // timer and per-tick damping. Advance all of them at legacy ticks.
+        const f32 savedScale = gNativeSimulationTickScale;
+        gNativeSimulationTickScale = 1.0f;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & LIGHTNING_EFFECT); ++tick) {
+            apply_lightning_effect(player, arg1);
+        }
+        gNativeSimulationTickScale = savedScale;
     }
     if ((player->effects & 0x10000) == 0x10000) {
-        func_8008F3F4(player, arg1);
+        // This effect counts fixed integer rotation steps and repetitions.
+        // Keep the immobilization active on intervening native frames.
+        if (gNativeSimulationLegacyTicks == 0) {
+            player->unk_07C = 0;
+            player->currentSpeed = 0.0f;
+        }
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x10000); ++tick) {
+            func_8008F3F4(player, arg1);
+        }
     }
     if ((player->effects & STAR_EFFECT) == STAR_EFFECT) {
-        apply_star_effect(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & STAR_EFFECT); ++tick) {
+            apply_star_effect(player, arg1);
+        }
     }
     if ((player->effects & BOO_EFFECT) == BOO_EFFECT) {
-        apply_boo_effect(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & BOO_EFFECT); ++tick) {
+            apply_boo_effect(player, arg1);
+        }
     }
     if (((player->effects & 0x20000000) == 0x20000000) && (player->unk_228 >= 0x64)) {
         player_decelerate_alternative(player, 4.0f);
     }
     if (((player->effects & 0x80) == 0x80) || ((player->effects & 0x40) == 0x40)) {
-        func_8008C9EC(player, arg1);
+        const f32 savedScale = gNativeSimulationTickScale;
+        gNativeSimulationTickScale = 1.0f;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0xC0); ++tick) {
+            func_8008C9EC(player, arg1);
+        }
+        gNativeSimulationTickScale = savedScale;
     }
     if ((player->effects & 0x400) == 0x400) {
-        func_8008C62C(player, arg1);
+        const f32 savedScale = gNativeSimulationTickScale;
+        gNativeSimulationTickScale = 1.0f;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x400); ++tick) {
+            func_8008C62C(player, arg1);
+        }
+        gNativeSimulationTickScale = savedScale;
     }
     if ((player->effects & 0x01000000) == 0x01000000) {
-        func_8008E4A4(player, arg1);
+        if (gNativeSimulationLegacyTicks == 0) {
+            player->unk_206 = player->slopeAccel = player->unk_0C0 = player->unk_07C = 0;
+            player->unk_0C2 = 0xF;
+            player->kartPropulsionStrength = player->currentSpeed = 0.0f;
+            player->velocity[0] = player->velocity[2] = 0.0f;
+            player->effects &= ~0xC0;
+        }
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x01000000); ++tick) {
+            func_8008E4A4(player, arg1);
+        }
     }
     if ((player->effects & HIT_BY_ITEM_EFFECT) == HIT_BY_ITEM_EFFECT) {
-        apply_hit_by_item_effect(player, arg1);
+        if (gNativeSimulationLegacyTicks == 0) {
+            player->unk_206 = player->slopeAccel = player->unk_0C0 = player->unk_07C = 0;
+            player->unk_0C2 = 0xF;
+            player->currentSpeed = 0.0f;
+            player->effects &= ~0xC0;
+        }
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & HIT_BY_ITEM_EFFECT); ++tick) {
+            apply_hit_by_item_effect(player, arg1);
+        }
     }
     if ((player->effects & 0x4000) == 0x4000) {
-        func_8008F1B8(player, arg1);
+        // The start spinout advances in fixed angle increments and ends on
+        // exact integer thresholds. Preserve its 60 Hz progression rather
+        // than running it once for every native presentation frame.
+        if (gNativeSimulationLegacyTicks == 0) {
+            player->kartPropulsionStrength = player->unk_210 * 0.05f;
+        }
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x4000); ++tick) {
+            func_8008F1B8(player, arg1);
+        }
     }
     if ((player->effects & 0x80000) == 0x80000) {
-        func_8008D698(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x80000); ++tick) {
+            func_8008D698(player, arg1);
+        }
     }
     if ((player->effects & 0x800000) == 0x800000) {
-        func_8008D8B4(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && (player->effects & 0x800000); ++tick) {
+            func_8008D8B4(player, arg1);
+        }
         player_decelerate_alternative(player, 10.0f);
     }
     if (gRaceState != RACE_FINISHED) {
-        if (player->triggers & LOSE_BATTLE_EFFECT) {
-            func_8008FC64(player, arg1);
-        }
-        if (player->triggers & BECOME_BOMB_EFFECT) {
-            func_8008FCDC(player, arg1);
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks &&
+             (player->triggers & (LOSE_BATTLE_EFFECT | BECOME_BOMB_EFFECT)); ++tick) {
+            if (player->triggers & LOSE_BATTLE_EFFECT) {
+                func_8008FC64(player, arg1);
+            }
+            if (player->triggers & BECOME_BOMB_EFFECT) {
+                func_8008FCDC(player, arg1);
+            }
         }
     }
     if (player->kartProps & UNUSED_0x800) {
@@ -1741,7 +1912,7 @@ void apply_effect(Player* player, s8 arg1, s8 arg2) {
     }
 }
 
-void func_8002D028(Player* player, s8 arg1) {
+void func_8002D028(Player* player, s16 arg1) {
     Vec3f sp4C;
     f32 temp_f18;
     s16 temp_t1;
@@ -1793,7 +1964,7 @@ void func_8002D028(Player* player, s8 arg1) {
     }
 }
 
-void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 playerId) {
+void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s16 playerId) {
     Vec3f sp184 = { 0.0, 0.0, 1.0 };
     Vec3f sp178 = { 0.0, 0.0, 0.0 };
     Vec3f sp16C = { 0.0, 0.0, 0.0 };
@@ -1818,6 +1989,7 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     f32 surfaceDistance;
     UNUSED s32 pad2;
     Vec3f newVelocity;
+    f64 nativeDisplacement[3] = { 0.0, 0.0, 0.0 };
     Vec3f sp8C;
     UNUSED s32 pad3[3];
     s32 sp7C = 0;
@@ -1924,6 +2096,35 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     newVelocity[1] +=
         (((((f64) ((sp184[1] + gravityY) + sp160[1])) - (newVelocity[1] * (0.12 * ((f64) player->kartFriction)))) / 6000.0) /
         ((f64) player->unk_DAC));
+    // Experimental fractional step for the linear part of kart motion.
+    // Other timer/collision systems still need conversion before any caller
+    // may select a different scale. Scale 1 keeps the original arithmetic.
+    if (gNativeSimulationTickScale != 1.0f) {
+        f64 horizontalDivisor = 30.0;
+        if (((player->unk_10C < 3) && (((s32) player->unk_256) < 3)) ||
+            ((player->effects & BOOST_EFFECT) == BOOST_EFFECT)) {
+            horizontalDivisor = (((player->unk_07C >> 16) >= 0x28) || ((player->unk_07C >> 16) < -0x27))
+                ? (((f64) player->unk_20C * 0.6) + 1.0 + sp7C) : (f64) (sp7C + 1);
+        }
+        for (s32 axis = 0; axis < 3; ++axis) {
+            f64 divisor = axis == 1 ? (f64) player->unk_DAC : horizontalDivisor;
+            f64 drag = 1.0 - (0.12 * (f64) player->kartFriction) / (6000.0 * divisor);
+            if (drag > 0.0 && isfinite(drag)) {
+                NativeFrameMotion motion = { 0.0, player->velocity[axis] };
+                f64 impulse = (f64) newVelocity[axis] - drag * motion.velocity;
+                motion = NativeFrameMotion_Advance(motion, drag, impulse, gNativeSimulationTickScale);
+                nativeDisplacement[axis] = motion.position;
+                newVelocity[axis] = (f32) motion.velocity;
+                if (axis == 1) nativeDisplacement[axis] = NativeFrameMotion_GroundedVerticalDisplacement(
+                    nativeDisplacement[axis], player->collision.surfaceDistance[2], player->collision.orientationVector[1],
+                    player->velocity[1], newVelocity[1], player->kartHopVelocity);
+            } else {
+                nativeDisplacement[axis] = player->velocity[axis] * gNativeSimulationTickScale;
+                newVelocity[axis] = player->velocity[axis] +
+                    (newVelocity[axis] - player->velocity[axis]) * gNativeSimulationTickScale;
+            }
+        }
+    }
     if (((((player->lakituProps & HELD_BY_LAKITU) == HELD_BY_LAKITU) || ((player->lakituProps & LAKITU_SCENE) == LAKITU_SCENE)) ||
         ((player->effects & HIT_EFFECT) == HIT_EFFECT)) ||
         (player->lakituProps & LAKITU_RETRIEVAL)) {
@@ -1946,15 +2147,40 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     nextY = posY + player->velocity[1];
     nextZ = posZ + player->velocity[2] + D_8018CE10[playerId].unk_04[2];
 
+    if (gNativeSimulationTickScale != 1.0f) {
+        nextX = posX + (f32) nativeDisplacement[0] + D_8018CE10[playerId].unk_04[0] * gNativeSimulationTickScale;
+        nextY = posY + (f32) nativeDisplacement[1];
+        nextZ = posZ + (f32) nativeDisplacement[2] + D_8018CE10[playerId].unk_04[2] * gNativeSimulationTickScale;
+    }
+
     if (((((player->lakituProps & HELD_BY_LAKITU) != HELD_BY_LAKITU) && ((player->lakituProps & LAKITU_SCENE) != LAKITU_SCENE)) &&
         ((player->effects & HIT_EFFECT) != HIT_EFFECT)) &&
         (!(player->lakituProps & LAKITU_RETRIEVAL))) {
-        func_8002AAC0(player);
-        nextY += player->kartHopVelocity;
-        nextY -= 0.02;
+        f32 hopDisplacement = func_8002AAC0(player);
+        if (gNativeSimulationTickScale == 1.0f) {
+            nextY += hopDisplacement;
+            nextY -= 0.02;
+        } else {
+            nextY += hopDisplacement - 0.02f * gNativeSimulationTickScale;
+        }
+    }
+    if (GameEngine_IsExperimentalNativeRace() && CVarGetInteger("gExperimentalGroundFollowProbe", 0) &&
+        player->collision.orientationVector[1] > 0.9f && player->collision.surfaceDistance[2] > -0.2f &&
+        player->collision.surfaceDistance[2] < 0.04f && player->kartHopVelocity == 0.0f &&
+        player->velocity[1] <= 0.0f && player->unk_0C2 <= 1) {
+        const f32* normal = player->collision.orientationVector;
+        const f32 projectedGap = player->collision.surfaceDistance[2] +
+            (nextX - posX) * normal[0] + (nextY - posY) * normal[1] + (nextZ - posZ) * normal[2];
+        if (projectedGap > -0.05f && projectedGap < 0.1f) nextY -= (projectedGap + 0.05f) / normal[1];
     }
     actor_terrain_collision(&player->collision, player->boundingBoxSize, nextX, nextY, nextZ, player->oldPos[0],
                             player->oldPos[1], player->oldPos[2]);
+    if (playerId == 0 && CVarGetInteger("gExperimentalGroundTrace", 0) &&
+        CVarGetInteger("gExperimentalNativeBenchmark", 0) && gCourseTimer >= 1.0f && gCourseTimer < 3.0f) {
+        printf("GROUND_TRACE t=%.5f scale=%.5f dist=%.5f normalY=%.5f vy=%.5f hopV=%.5f y=%.5f\n",
+               gCourseTimer, gNativeSimulationTickScale, player->collision.surfaceDistance[2],
+               player->collision.orientationVector[1], player->velocity[1], player->kartHopVelocity, player->pos[1]);
+    }
     player->unk_058 = 0.0f;
     player->unk_060 = 0.0f;
     player->unk_05C = 1.0f;
@@ -1966,7 +2192,7 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
                                     player->rotation[1] + 0x8000);
     }
     player->effects |= 8;
-    player->unk_0C2 += 1;
+    player->unk_0C2 += gNativeSimulationLegacyTicks;
     surfaceDistance = player->collision.surfaceDistance[2];
     if (surfaceDistance <= 0.0f) {
         player->effects = player->effects & (~2);
@@ -1985,7 +2211,7 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
                 func_800C9060(playerId, 0x1900A60AU);
             } else if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
                         ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
-                func_800CADD0((u8) playerId, ((f32) player->unk_0C2) / 35.0f);
+                func_800CADD0(playerId, ((f32) player->unk_0C2) / 35.0f);
             }
             if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
                 player->kartProps |= POST_TUMBLE_GAS;
@@ -1996,7 +2222,7 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
             player->unk_DB4.unk18 = 0;
             if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
                 ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
-                func_800CADD0((u8) playerId, ((f32) player->unk_0C2) / 35.0f);
+                func_800CADD0(playerId, ((f32) player->unk_0C2) / 35.0f);
             }
             if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
                 player->kartProps |= POST_TUMBLE_GAS;
@@ -2008,9 +2234,9 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
             if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
                 ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
                 if (((player->unk_0C2 < 0xB) && (player->unk_0C2 >= 4)) && (IsBowsersCastle())) {
-                    func_800CADD0((u8) playerId, player->unk_0C2 / 14.0f);
+                    func_800CADD0(playerId, player->unk_0C2 / 14.0f);
                 } else {
-                    func_800CADD0((u8) playerId, player->unk_0C2 / 25.0f);
+                    func_800CADD0(playerId, player->unk_0C2 / 25.0f);
                 }
             }
         }
@@ -2020,6 +2246,13 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     surfaceDistance = player->collision.surfaceDistance[2];
     if (surfaceDistance <= 0.0f) {
         func_8003F46C(player, sp8C, newVelocity, sp178, &surfaceDistance, &nextX, &nextY, &nextZ);
+    }
+    if (playerId == 0 && CVarGetInteger("gExperimentalAirBenchmark", 0) == 2 &&
+        CVarGetInteger("gExperimentalNativeBenchmark", 0) && gCourseTimer >= 1.74f && gCourseTimer < 1.82f) {
+        printf("AIR_STEP t=%.5f scale=%.5f phase=%.5f posY=%.5f nextY=%.5f vy=%.5f newVy=%.5f dist=%.5f normal=(%.4f,%.4f,%.4f) hopV=%.5f hopA=%.5f hopJ=%.5f\n",
+               gCourseTimer, gNativeSimulationTickScale, fmodf(gNativeVisualPhase * 2.0f, 1.0f), posY, nextY, player->velocity[1], newVelocity[1],
+               player->collision.surfaceDistance[2], player->collision.orientationVector[0], player->collision.orientationVector[1],
+               player->collision.orientationVector[2], player->kartHopVelocity, player->kartHopAcceleration, player->kartHopJerk);
     }
     surfaceDistance = player->collision.surfaceDistance[0];
     if (surfaceDistance < 0.0f) {
@@ -2036,7 +2269,7 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
         surfaceDistance = player->collision.surfaceDistance[1];
         if (surfaceDistance >= 0.0f) {
             player->unk_046 &= 0xFFDF;
-            if (player->unk_256 != 0) {
+            for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && player->unk_256 != 0; ++tick) {
                 player->unk_256++;
                 if (player->unk_256 >= 10) {
                     player->unk_256 = 0;
@@ -2090,7 +2323,8 @@ void func_8002D268(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     gPlayerLastVelocity[playerId][0] = newVelocity[0];
     gPlayerLastVelocity[playerId][1] = newVelocity[1];
     gPlayerLastVelocity[playerId][2] = newVelocity[2];
-    if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
+    if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN ||
+        ((player->type & PLAYER_CPU) && (player->effects & BOOST_EFFECT))) {
         if (gKartTopSpeedTable[player->characterId] < player->speed) {
             temp = gKartTopSpeedTable[player->characterId] / player->speed;
             player->velocity[0] *= temp;
@@ -2130,7 +2364,7 @@ void set_player_height(Player* player) {
     player->velocity[1] = 0.0f;
 }
 
-void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 playerId) {
+void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s16 playerId) {
     Vec3f spEC = { 0.0f, 0.0f, 1.0f };
     Vec3f spE0 = { 0.0f, 0.0f, 0.0f };
     Vec3f spD4 = { 0.0f, 0.0f, 0.0f };
@@ -2150,6 +2384,7 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     UNUSED s32 pad3[4];
     f32 temp;
     Vec3f sp54;
+    f64 nativeDisplacement[3] = { 0.0, 0.0, 0.0 };
     Vec3f sp48;
     s16 sp46;
     func_8002B830(player, playerId, screenId);
@@ -2210,6 +2445,33 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     }
     sp54[1] += (((((spEC[1] + sp7C) + spD4[1])) - (sp54[1] * (0.12 * player->kartFriction))) / 6000) / player->unk_DAC;
 
+    if (gNativeSimulationTickScale != 1.0f) {
+        const bool normalDrag = (player->unk_10C < 3) && (player->unk_256 < 3) &&
+            ((player->effects & 0x400) != 0x400) && ((player->effects & 0x01000000) != 0x01000000) &&
+            ((player->effects & HIT_BY_ITEM_EFFECT) != HIT_BY_ITEM_EFFECT);
+        const f64 horizontalDrag = normalDrag ?
+            1.0 - (0.12 * player->kartFriction) / (6000.0 * ((player->unk_20C * 5.0f) + 1.0f)) :
+            1.0 - (0.2 * player->kartFriction * 0.08) / 6000.0;
+        const f64 verticalDrag = 1.0 - (0.12 * player->kartFriction) / (6000.0 * player->unk_DAC);
+        for (s32 axis = 0; axis < 3; ++axis) {
+            const f64 drag = axis == 1 ? verticalDrag : horizontalDrag;
+            if (drag > 0.0 && isfinite(drag)) {
+                NativeFrameMotion motion = { 0.0, player->velocity[axis] };
+                const f64 impulse = (f64) sp54[axis] - drag * motion.velocity;
+                motion = NativeFrameMotion_Advance(motion, drag, impulse, gNativeSimulationTickScale);
+                nativeDisplacement[axis] = motion.position;
+                sp54[axis] = (f32) motion.velocity;
+                if (axis == 1) nativeDisplacement[axis] = NativeFrameMotion_GroundedVerticalDisplacement(
+                    nativeDisplacement[axis], player->collision.surfaceDistance[2], player->collision.orientationVector[1],
+                    player->velocity[1], sp54[1], player->kartHopVelocity);
+            } else {
+                nativeDisplacement[axis] = player->velocity[axis] * gNativeSimulationTickScale;
+                sp54[axis] = player->velocity[axis] +
+                    (sp54[axis] - player->velocity[axis]) * gNativeSimulationTickScale;
+            }
+        }
+    }
+
     if (((player->lakituProps & HELD_BY_LAKITU) == HELD_BY_LAKITU) || ((player->lakituProps & LAKITU_SCENE) == LAKITU_SCENE)) {
         sp54[0] = 0.0f;
         sp54[1] = 0.0f;
@@ -2226,12 +2488,16 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     spD0 = posX + player->velocity[0] + D_8018CE10[playerId].unk_04[0];
     spCC = posY + player->velocity[1];
     spC8 = posZ + player->velocity[2] + D_8018CE10[playerId].unk_04[2];
-    func_8002AAC0(player);
-    spCC += player->kartHopVelocity;
+    if (gNativeSimulationTickScale != 1.0f) {
+        spD0 = posX + (f32) nativeDisplacement[0] + D_8018CE10[playerId].unk_04[0] * gNativeSimulationTickScale;
+        spCC = posY + (f32) nativeDisplacement[1];
+        spC8 = posZ + (f32) nativeDisplacement[2] + D_8018CE10[playerId].unk_04[2] * gNativeSimulationTickScale;
+    }
+    spCC += func_8002AAC0(player);
     actor_terrain_collision(&player->collision, player->boundingBoxSize, spD0, spCC, spC8, player->oldPos[0],
                             player->oldPos[1], player->oldPos[2]);
     player->effects |= 8;
-    player->unk_0C2 += 1;
+    player->unk_0C2 += gNativeSimulationLegacyTicks;
     player->unk_058 = 0.0f;
     player->unk_060 = 0.0f;
     player->unk_05C = 1.0f;
@@ -2250,7 +2516,7 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
                 player->unk_DB4.unkC = 3.0f;
                 if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
                     ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
-                    func_800CADD0((u8) playerId, ((f32) player->unk_0C2) / 50.0f);
+                    func_800CADD0(playerId, ((f32) player->unk_0C2) / 50.0f);
                 }
                 if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
                     player->kartProps |= POST_TUMBLE_GAS;
@@ -2262,7 +2528,7 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
                 player->unk_DB4.unk18 = 0;
                 if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
                     ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
-                    func_800CADD0((u8) playerId, ((f32) player->unk_0C2) / 50.0f);
+                    func_800CADD0(playerId, ((f32) player->unk_0C2) / 50.0f);
                 }
                 if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
                     player->kartProps |= POST_TUMBLE_GAS;
@@ -2276,7 +2542,7 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
                 }
                 if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
                     ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
-                    func_800CADD0((u8) playerId, ((f32) player->unk_0C2) / 20.0f);
+                    func_800CADD0(playerId, ((f32) player->unk_0C2) / 20.0f);
                 }
                 if (player->unk_0C2 >= 0x28) {
                     player->unk_0C2 = 0x0014;
@@ -2320,7 +2586,7 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
         sp74 = player->collision.surfaceDistance[1];
         if (sp74 >= 0.0f) {
             player->unk_046 &= 0xFFDF;
-            if (player->unk_256 != 0) {
+            for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks && player->unk_256 != 0; ++tick) {
                 player->unk_256++;
                 if ((player->unk_256) >= 0xA) {
                     player->unk_256 = 0;
@@ -2364,7 +2630,8 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     player->velocity[0] = sp54[0];
     player->velocity[1] = sp54[1];
     player->velocity[2] = sp54[2];
-    if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
+    if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN ||
+        ((player->type & PLAYER_CPU) && (player->effects & BOOST_EFFECT))) {
         if (gKartTopSpeedTable[player->characterId] < player->speed) {
             temp_f0_6 = gKartTopSpeedTable[player->characterId] / player->speed;
             player->velocity[0] *= temp_f0_6;
@@ -2376,7 +2643,7 @@ void func_8002E594(Player* player, UNUSED Camera* camera, s8 screenId, s8 player
     update_player_environment_and_hazard_state(player, playerId);
 }
 
-void control_cpu_movement(Player* player, UNUSED Camera* camera, s8 screenId, s8 playerId) {
+void control_cpu_movement(Player* player, UNUSED Camera* camera, s8 screenId, s16 playerId) {
     Vec3f spF4 = { 0.0f, 0.0f, 1.0f };
     UNUSED Vec3f spE8 = { 0.0f, 0.0f, 0.0f };
     Vec3f spDC = { 0.0f, 0.0f, 0.0f };
@@ -2413,11 +2680,35 @@ void control_cpu_movement(Player* player, UNUSED Camera* camera, s8 screenId, s8
     newVelocity[2] = player->velocity[2];
     newVelocity[0] += (((spF4[0] + sp84) + spD0[0]) - (newVelocity[0] * (0.12 * player->kartFriction))) / 6000.0;
     newVelocity[2] += (((spF4[2] + sp7C) + spD0[2]) - (newVelocity[2] * (0.12 * player->kartFriction))) / 6000.0;
+    f64 nativeDeltaX = 0.0, nativeDeltaZ = 0.0;
+    if (gNativeSimulationTickScale != 1.0f) {
+        const f64 drag = 1.0 - (0.12 * (f64) player->kartFriction) / 6000.0;
+        for (s32 axis = 0; axis <= 2; axis += 2) {
+            if (drag > 0.0 && isfinite(drag)) {
+                NativeFrameMotion motion = { 0.0, player->velocity[axis] };
+                const f64 impulse = (f64) newVelocity[axis] - drag * motion.velocity;
+                motion = NativeFrameMotion_Advance(motion, drag, impulse, gNativeSimulationTickScale);
+                newVelocity[axis] = (f32) motion.velocity;
+                if (axis == 0) nativeDeltaX = motion.position;
+                else nativeDeltaZ = motion.position;
+            } else {
+                const f64 displacement = player->velocity[axis] * gNativeSimulationTickScale;
+                newVelocity[axis] = player->velocity[axis] +
+                    (newVelocity[axis] - player->velocity[axis]) * gNativeSimulationTickScale;
+                if (axis == 0) nativeDeltaX = displacement;
+                else nativeDeltaZ = displacement;
+            }
+        }
+    }
     player->oldPos[0] = player->pos[0];
     player->oldPos[1] = nextY;
     player->oldPos[2] = player->pos[2];
     nextX = player->pos[0] + player->velocity[0];
     nextZ = player->pos[2] + player->velocity[2];
+    if (gNativeSimulationTickScale != 1.0f) {
+        nextX = player->pos[0] + (f32) nativeDeltaX;
+        nextZ = player->pos[2] + (f32) nativeDeltaZ;
+    }
     player->unk_0C0 = 0;
     player->kartHopJerk = 0;
     player->kartHopAcceleration = 0;
@@ -2452,7 +2743,7 @@ void control_cpu_movement(Player* player, UNUSED Camera* camera, s8 screenId, s8
     }
 }
 
-void func_8002F730(Player* player, UNUSED Camera* camera, UNUSED s8 screenId, s8 playerId) {
+void func_8002F730(Player* player, UNUSED Camera* camera, UNUSED s8 screenId, s16 playerId) {
     Vec3f spF4 = { 0.0f, 0.0f, 1.0f };
     Vec3f spE8 = { 0.0f, 0.0f, 0.0f };
     UNUSED Vec3f spDC = { 0.0f, 0.0f, 0.0f };
@@ -2472,6 +2763,7 @@ void func_8002F730(Player* player, UNUSED Camera* camera, UNUSED s8 screenId, s8
     f32 sp78;
     f32 sqrt;
     Vec3f sp68;
+    f64 nativeDisplacement[3] = { 0.0, 0.0, 0.0 };
     Vec3f sp5C;
     UNUSED s32 pad3[3];
 
@@ -2490,6 +2782,20 @@ void func_8002F730(Player* player, UNUSED Camera* camera, UNUSED s8 screenId, s8
     sp68[2] += (((f64) (spF4[2] + sp7C) - (sp68[2] * 780.0)) / 6500.0);
     sp68[1] += (((f64) (spF4[1] + -1100.0f) - (sp68[1] * 780.0)) / 6500.0);
 
+    if (gNativeSimulationTickScale != 1.0f) {
+        const f64 drag = 1.0 - 780.0 / 6500.0;
+        for (s32 axis = 0; axis < 3; ++axis) {
+            NativeFrameMotion motion = { 0.0, player->velocity[axis] };
+            const f64 impulse = (f64) sp68[axis] - drag * motion.velocity;
+            motion = NativeFrameMotion_Advance(motion, drag, impulse, gNativeSimulationTickScale);
+            nativeDisplacement[axis] = motion.position;
+            sp68[axis] = (f32) motion.velocity;
+            if (axis == 1) nativeDisplacement[axis] = NativeFrameMotion_GroundedVerticalDisplacement(
+                nativeDisplacement[axis], player->collision.surfaceDistance[2], player->collision.orientationVector[1],
+                player->velocity[1], sp68[1], player->kartHopVelocity);
+        }
+    }
+
     spC0 = player->pos[0];
     sp44 = player->pos[1];
     spB8 = player->pos[2];
@@ -2501,10 +2807,13 @@ void func_8002F730(Player* player, UNUSED Camera* camera, UNUSED s8 screenId, s8
     spCC = player->velocity[0] + spC0;
     spC8 = player->velocity[1] + sp44;
     spC4 = player->velocity[2] + spB8;
+    if (gNativeSimulationTickScale != 1.0f) {
+        spCC = spC0 + (f32) nativeDisplacement[0];
+        spC8 = sp44 + (f32) nativeDisplacement[1];
+        spC4 = spB8 + (f32) nativeDisplacement[2];
+    }
 
-    func_8002AAC0(player);
-
-    spC8 += player->kartHopVelocity;
+    spC8 += func_8002AAC0(player);
     actor_terrain_collision(&player->collision, player->boundingBoxSize, spCC, spC8, spC4, player->oldPos[0],
                             player->oldPos[1], player->oldPos[2]);
     player->unk_058 = 0.0f;
@@ -2560,7 +2869,7 @@ void func_8002F730(Player* player, UNUSED Camera* camera, UNUSED s8 screenId, s8
     }
 }
 
-void func_8002FCA8(Player* player, s8 arg1) {
+void func_8002FCA8(Player* player, s16 arg1) {
     f32 var_f0;
     f32 var_f12;
     s32 temp_lo;
@@ -2651,7 +2960,7 @@ void func_8002FE84(Player* player, f32 arg1) {
     }
 }
 
-f32 func_80030150(Player* player, s8 arg1) {
+f32 func_80030150(Player* player, s16 arg1) {
     f32 var_f0;
     s16 temp_lo;
     f32 var_f2;
@@ -2732,9 +3041,9 @@ f32 func_80030150(Player* player, s8 arg1) {
             }
         }
         if ((player->effects & 8) != 0) {
-            move_f32_towards(&player->unk_0A0, player->kartPropulsionStrength * 0.04, 0.15f);
+            native_player_move_towards(&player->unk_0A0, player->kartPropulsionStrength * 0.04, 0.15f);
         } else {
-            move_f32_towards(&player->unk_0A0, 0.0f, 0.1f);
+            native_player_move_towards(&player->unk_0A0, 0.0f, 0.1f);
         }
     } else {
         player->unk_0A0 = 0.0f;
@@ -2748,24 +3057,24 @@ f32 func_80030150(Player* player, s8 arg1) {
     }
     if ((player->type & PLAYER_HUMAN) != PLAYER_HUMAN) {
         if ((player->effects & 0x200000) == 0x200000) {
-            move_f32_towards(&player->unk_0E8, 380.0f, 0.5f);
+            native_player_move_towards(&player->unk_0E8, 380.0f, 0.5f);
         } else {
-            move_f32_towards(&player->unk_0E8, 0.0f, 0.1f);
+            native_player_move_towards(&player->unk_0E8, 0.0f, 0.1f);
         }
     }
     if ((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) {
         if (((player->effects & 0x100) == 0x100) && ((player->effects & DRIFTING_EFFECT) != DRIFTING_EFFECT)) {
-            move_f32_towards(&player->unk_0E8, 580.0f, 0.2f);
+            native_player_move_towards(&player->unk_0E8, 580.0f, 0.2f);
         } else {
-            move_f32_towards(&player->unk_0E8, 0.0f, 0.01f);
+            native_player_move_towards(&player->unk_0E8, 0.0f, 0.01f);
         }
         if ((player->effects & 0x200000) == 0x200000) {
-            move_f32_towards(&player->unk_0E4, 580.0f, 0.01f);
+            native_player_move_towards(&player->unk_0E4, 580.0f, 0.01f);
         } else {
-            move_f32_towards(&player->unk_0E4, 0.0f, 0.01f);
+            native_player_move_towards(&player->unk_0E4, 0.0f, 0.01f);
         }
     }
-    move_f32_towards(&player->unk_104, var_f0, gKartTurnSpeedReductionTable1[player->characterId] + 0.05);
+    native_player_move_towards(&player->unk_104, var_f0, gKartTurnSpeedReductionTable1[player->characterId] + 0.05);
     var_f2 = (player->kartPropulsionStrength + player->unk_0E8 + player->boostPower + player->unk_0E4) - player->unk_0A0;
     if (var_f2 < 0.0f) {
         var_f2 = 0.0f;
@@ -2850,6 +3159,8 @@ void detect_triple_a_combo_a_released(Player* player) {
     if (playerIndex < 0 || playerIndex >= NUM_RACERS) {
         return;
     }
+    // Combo windows and boost duration use legacy 60 Hz ticks.
+    for (uint32_t comboTick = 0; comboTick < gNativeSimulationLegacyTicks; ++comboTick) {
     if (gIsPlayerTripleAButtonCombo[playerIndex] == false) {
         if (gPlayerIsThrottleActive[playerIndex] == true) {
             if ((gFrameSinceLastACombo[playerIndex] < 2) || (gFrameSinceLastACombo[playerIndex] >= 9)) {
@@ -2881,6 +3192,7 @@ void detect_triple_a_combo_a_released(Player* player) {
             gIsPlayerTripleAButtonCombo[playerIndex] = false;
         }
     }
+    }
 }
 
 void detect_triple_a_combo_a_pressed(Player* player) {
@@ -2889,6 +3201,8 @@ void detect_triple_a_combo_a_pressed(Player* player) {
     if (playerIndex < 0 || playerIndex >= NUM_RACERS) {
         return;
     }
+    // Combo windows and boost duration use legacy 60 Hz ticks.
+    for (uint32_t comboTick = 0; comboTick < gNativeSimulationLegacyTicks; ++comboTick) {
     if (gIsPlayerTripleAButtonCombo[playerIndex] == false) {
         if (gPlayerIsThrottleActive[playerIndex] == false) {
             if ((gFrameSinceLastACombo[playerIndex] < 2) || (gFrameSinceLastACombo[playerIndex] >= 9)) {
@@ -2920,10 +3234,12 @@ void detect_triple_a_combo_a_pressed(Player* player) {
             gIsPlayerTripleAButtonCombo[playerIndex] = false;
         }
     }
+    }
 }
 
 void player_accelerate_alternative(Player* player) {
     s32 player_index;
+    const f32 nativeInitialSpeed = player->currentSpeed;
 
     player_index = get_player_index_for_player(player);
     if (gIsPlayerTripleAButtonCombo[player_index] == false) {
@@ -3019,6 +3335,26 @@ void player_accelerate_alternative(Player* player) {
                 gKartTripleABoost[player->characterId];
         }
     }
+    if (gNativeSimulationTickScale != 1.0f) {
+        if (CVarGetInteger("gExperimentalAccelerationProbe", 0)) {
+            double rates[10];
+            const double multiplier = gIsPlayerTripleAButtonCombo[player_index] ? gKartTripleABoost[player->characterId] : 1.0;
+            for (int i = 0; i < 10; ++i) {
+                rates[i] = (gKartAccelerationTables[player->characterId][i] +
+                            0.05 * (player->slopeAccel / 182)) * multiplier;
+            }
+            if (NativeFrameAcceleration_CanIntegrate(nativeInitialSpeed, player->topSpeed, rates, gNativeSimulationTickScale)) {
+                player->currentSpeed = (f32) NativeFrameAcceleration_Advance(nativeInitialSpeed, player->topSpeed,
+                                                                              rates, gNativeSimulationTickScale);
+            } else {
+                player->currentSpeed = nativeInitialSpeed +
+                    (player->currentSpeed - nativeInitialSpeed) * gNativeSimulationTickScale;
+            }
+        } else {
+            player->currentSpeed = nativeInitialSpeed +
+                (player->currentSpeed - nativeInitialSpeed) * gNativeSimulationTickScale;
+        }
+    }
     if (player->currentSpeed < 0.0f) {
         player->currentSpeed = 0.0f;
     }
@@ -3040,6 +3376,7 @@ void player_decelerate_alternative(Player* player, f32 speed) {
     s32 player_index;
     player_index = get_player_index_for_player(player);
 
+    if (gNativeSimulationTickScale != 1.0f) speed *= gNativeSimulationTickScale;
     player->currentSpeed -= speed;
     if (player->currentSpeed <= 0.0f) {
         player->currentSpeed = 0.0f;
@@ -3068,6 +3405,8 @@ void detect_triple_b_combo_b_released(Player* player) {
         return;
     }
 
+    // Combo windows and boost duration use legacy 60 Hz ticks.
+    for (uint32_t comboTick = 0; comboTick < gNativeSimulationLegacyTicks; ++comboTick) {
     if (gIsPlayerTripleBButtonCombo[playerIndex] == false) {
         if (gPlayerIsBrakeActive[playerIndex] == true) {
             if ((gFrameSinceLastBCombo[playerIndex] < 2) || (gFrameSinceLastBCombo[playerIndex] >= 9)) {
@@ -3099,6 +3438,7 @@ void detect_triple_b_combo_b_released(Player* player) {
             gIsPlayerTripleBButtonCombo[playerIndex] = false;
         }
     }
+    }
 }
 
 void detect_triple_b_combo_b_pressed(Player* player) {
@@ -3108,6 +3448,8 @@ void detect_triple_b_combo_b_pressed(Player* player) {
         return;
     }
 
+    // Combo windows and boost duration use legacy 60 Hz ticks.
+    for (uint32_t comboTick = 0; comboTick < gNativeSimulationLegacyTicks; ++comboTick) {
     if (gIsPlayerTripleBButtonCombo[playerIndex] == false) {
         if (gPlayerIsBrakeActive[playerIndex] == false) {
             if ((gFrameSinceLastBCombo[playerIndex] < 2) || (gFrameSinceLastBCombo[playerIndex] >= 9)) {
@@ -3138,6 +3480,7 @@ void detect_triple_b_combo_b_pressed(Player* player) {
         if (gTimerBoostTripleBCombo[playerIndex] <= 0) {
             gIsPlayerTripleBButtonCombo[playerIndex] = false;
         }
+    }
     }
 }
 
@@ -3194,6 +3537,7 @@ void player_accelerate_during_start_sequence(Player* player) {
     s32 temp_v0;
     s32 var_v0;
     s32 test;
+    const f32 nativeInitialSpeed = player->currentSpeed;
 
     temp_v0 = get_player_index_for_player(player);
     if ((player->currentSpeed >= 0.0) && (player->currentSpeed < (player->topSpeed * 0.1))) {
@@ -3226,6 +3570,10 @@ void player_accelerate_during_start_sequence(Player* player) {
     if (((player->topSpeed * 0.9) <= player->currentSpeed) && (player->currentSpeed <= player->topSpeed * 1.0)) {
         player->currentSpeed += gKartAccelerationTables[player->characterId][9] * 2.5;
     }
+    if (gNativeSimulationTickScale != 1.0f) {
+        player->currentSpeed = nativeInitialSpeed +
+            (player->currentSpeed - nativeInitialSpeed) * gNativeSimulationTickScale;
+    }
     if (D_801656F0 == 1) {
         test = gRaceFrameCounter - D_801652E0[temp_v0];
         if (gModeSelection == TIME_TRIALS) {
@@ -3247,6 +3595,7 @@ void player_accelerate_during_start_sequence(Player* player) {
 }
 
 void player_decelerate_during_start_sequence(Player* player, f32 speedReduction) {
+    if (gNativeSimulationTickScale != 1.0f) speedReduction *= gNativeSimulationTickScale;
     player->currentSpeed -= speedReduction;
     if (player->currentSpeed <= 0.0f) {
         player->currentSpeed = 0.0f;
@@ -3267,6 +3616,21 @@ void player_decelerate_during_start_sequence(Player* player, f32 speedReduction)
 
 void player_accelerate(Player* player) {
     UNUSED s32 player_index;
+    const f32 nativeInitialSpeed = player->currentSpeed;
+
+    if (gNativeSimulationTickScale != 1.0f && CVarGetInteger("gExperimentalAccelerationProbe", 0)) {
+        double rates[10];
+        for (int i = 0; i < 10; ++i) {
+            rates[i] = gKartAccelerationTables[player->characterId][i] * (i < 7 ? 3.2 : 2.8);
+        }
+        if (NativeFrameAcceleration_CanIntegrate(player->currentSpeed, player->topSpeed, rates, gNativeSimulationTickScale)) {
+            player->currentSpeed = (f32) NativeFrameAcceleration_Advance(player->currentSpeed, player->topSpeed,
+                                                                          rates, gNativeSimulationTickScale);
+            if (player->currentSpeed < 0.0f) player->currentSpeed = 0.0f;
+            player->unk_098 = (player->currentSpeed * player->currentSpeed) / 25.0f;
+            return;
+        }
+    }
 
     player_index = get_player_index_for_player(player);
     if ((0.0 <= player->currentSpeed) && (player->currentSpeed < (player->topSpeed * 0.1))) {
@@ -3299,6 +3663,10 @@ void player_accelerate(Player* player) {
     if (((player->topSpeed * 0.9) <= player->currentSpeed) && (player->currentSpeed <= (player->topSpeed * 1.0))) {
         player->currentSpeed += gKartAccelerationTables[player->characterId][9] * 2.8;
     }
+    if (gNativeSimulationTickScale != 1.0f) {
+        player->currentSpeed = nativeInitialSpeed +
+            (player->currentSpeed - nativeInitialSpeed) * gNativeSimulationTickScale;
+    }
     if (player->currentSpeed < 0.0f) {
         player->currentSpeed = 0.0f;
     }
@@ -3306,6 +3674,7 @@ void player_accelerate(Player* player) {
 }
 
 void player_decelerate(Player* player, f32 speedReduction) {
+    if (gNativeSimulationTickScale != 1.0f) speedReduction *= gNativeSimulationTickScale;
     player->currentSpeed -= speedReduction;
     if (player->currentSpeed <= 0.0f) {
         player->currentSpeed = 0.0f;
@@ -3317,6 +3686,7 @@ void player_decelerate(Player* player, f32 speedReduction) {
 }
 
 void player_accelerate_global(Player* player, s32 playerIndex) {
+    const f32 nativeInitialSpeed = gPlayerCurrentSpeed[playerIndex];
     if ((gPlayerCurrentSpeed[playerIndex] >= 0.0) && (gPlayerCurrentSpeed[playerIndex] < ((f64) player->topSpeed * 0.1))) {
         gPlayerCurrentSpeed[playerIndex] += gKartAccelerationTables[player->characterId][0] * 3.2;
     }
@@ -3347,6 +3717,10 @@ void player_accelerate_global(Player* player, s32 playerIndex) {
     if (((player->topSpeed * 0.9) <= gPlayerCurrentSpeed[playerIndex]) && (gPlayerCurrentSpeed[playerIndex] <= (player->topSpeed * 1.0))) {
         gPlayerCurrentSpeed[playerIndex] += gKartAccelerationTables[player->characterId][9] * 2.8;
     }
+    if (gNativeSimulationTickScale != 1.0f) {
+        gPlayerCurrentSpeed[playerIndex] = nativeInitialSpeed +
+            (gPlayerCurrentSpeed[playerIndex] - nativeInitialSpeed) * gNativeSimulationTickScale;
+    }
     player->kartProps |= THROTTLE;
     if (gPlayerCurrentSpeed[playerIndex] < 0.0f) {
         gPlayerCurrentSpeed[playerIndex] = 0.0f;
@@ -3355,6 +3729,7 @@ void player_accelerate_global(Player* player, s32 playerIndex) {
 }
 
 void player_decelerate_global(Player* player, f32 speedReduction, s32 playerIndex) {
+    if (gNativeSimulationTickScale != 1.0f) speedReduction *= gNativeSimulationTickScale;
     player->kartProps &= ~THROTTLE;
     gPlayerCurrentSpeed[playerIndex] -= speedReduction;
     if (gPlayerCurrentSpeed[playerIndex] <= 0.0f) {
@@ -3367,7 +3742,7 @@ void player_decelerate_global(Player* player, f32 speedReduction, s32 playerInde
 }
 
 void func_80033850(Player* player, f32 arg1) {
-    player->unk_090 += arg1;
+    player->unk_090 += arg1 * gNativeSimulationTickScale;
     if (player->unk_090 >= 0.0f) {
         player->unk_090 = 0.0f;
     }
@@ -3378,7 +3753,7 @@ void func_80033884(Player* player, s32* arg1, s32* arg2, s32 arg3, s32 arg4, s32
 
     if ((*arg1 >= arg4) || (-arg4 >= *arg1)) {
         temp_v1 = player->unk_200;
-        player->unk_200 -= 0x800;
+        player->unk_200 -= (u32) (0x800 * gNativeSimulationLegacyTicks);
         if (player->unk_200 >= 0xF0000000) {
             player->unk_200 = temp_v1;
         }
@@ -3386,7 +3761,8 @@ void func_80033884(Player* player, s32* arg1, s32* arg2, s32 arg3, s32 arg4, s32
             player->unk_200 = arg5;
         }
 
-        *arg2 = (arg3 < *arg2) ? *arg2 - player->unk_200 : *arg2 + player->unk_200;
+        const u32 turnStep = gNativeSimulationTickScale == 1.0f ? player->unk_200 : (u32) (player->unk_200 * gNativeSimulationTickScale);
+        *arg2 = (arg3 < *arg2) ? *arg2 - turnStep : *arg2 + turnStep;
 
         if (player->unk_090 < ((f32) arg6)) {
             player->unk_090 = (f32) -arg6;
@@ -3398,7 +3774,7 @@ UNUSED void func_80033940(Player* player, s32* arg1, s32 arg2, s32 arg3, f32 arg
     u32 temp_v1;
 
     temp_v1 = player->unk_200;
-    player->unk_200 -= 0x800;
+    player->unk_200 -= (u32) (0x800 * gNativeSimulationLegacyTicks);
     if (!(player->unk_200 < 0xF0000000)) {
         player->unk_200 = temp_v1;
     }
@@ -3406,7 +3782,8 @@ UNUSED void func_80033940(Player* player, s32* arg1, s32 arg2, s32 arg3, f32 arg
         player->unk_200 = arg3;
     }
 
-    *arg1 = (arg2 < *arg1) ? *arg1 - player->unk_200 : *arg1 + player->unk_200;
+    const u32 turnStep = gNativeSimulationTickScale == 1.0f ? player->unk_200 : (u32) (player->unk_200 * gNativeSimulationTickScale);
+    *arg1 = (arg2 < *arg1) ? *arg1 - turnStep : *arg1 + turnStep;
 
     if (player->unk_090 < arg4) {
         player->unk_090 = (f32) -arg4;
@@ -3417,7 +3794,7 @@ void func_800339C4(Player* player, s32* arg1, s32 arg2, s32 arg3, f32 arg4) {
     s32 temp_v0;
 
     temp_v0 = player->unk_200;
-    player->unk_200 -= 0x800;
+    player->unk_200 -= (u32) (0x800 * gNativeSimulationLegacyTicks);
     if (player->unk_200 >= 0xF0000000) {
         player->unk_200 = temp_v0;
     }
@@ -3425,7 +3802,8 @@ void func_800339C4(Player* player, s32* arg1, s32 arg2, s32 arg3, f32 arg4) {
         player->unk_200 = arg3;
     }
 
-    *arg1 = (arg2 < *arg1) ? *arg1 - player->unk_200 : *arg1 + player->unk_200;
+    const u32 turnStep = gNativeSimulationTickScale == 1.0f ? player->unk_200 : (u32) (player->unk_200 * gNativeSimulationTickScale);
+    *arg1 = (arg2 < *arg1) ? *arg1 - turnStep : *arg1 + turnStep;
 
     func_80033850(player, arg4);
 }
@@ -3435,7 +3813,7 @@ void func_80033A40(Player* player, s32* arg1, s32* arg2, s32 arg3, s32 arg4, s32
 
     if ((*arg1 >= arg4) || (-arg4 >= *arg1)) {
         temp_v1 = player->unk_200;
-        player->unk_200 -= 0x800;
+        player->unk_200 -= (u32) (0x800 * gNativeSimulationLegacyTicks);
         if (player->unk_200 >= 0xF0000000) {
             player->unk_200 = temp_v1;
         }
@@ -3443,7 +3821,8 @@ void func_80033A40(Player* player, s32* arg1, s32* arg2, s32 arg3, s32 arg4, s32
             player->unk_200 = arg5;
         }
 
-        *arg2 = (arg3 < *arg2) ? *arg2 - player->unk_200 : *arg2 + player->unk_200;
+        const u32 turnStep = gNativeSimulationTickScale == 1.0f ? player->unk_200 : (u32) (player->unk_200 * gNativeSimulationTickScale);
+        *arg2 = (arg3 < *arg2) ? *arg2 - turnStep : *arg2 + turnStep;
 
         func_80033850(player, arg6);
     }
@@ -3482,11 +3861,11 @@ void func_80033AE0(Player* player, struct Controller* controller, s8 arg2) {
     if ((player->unk_0C0 / DEGREES_CONVERSION_FACTOR) < (-5)) {
         player->kartProps |= LEFT_TURN;
         player->kartProps &= ~RIGHT_TURN;
-        D_801652C0[arg2]++;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks; ++tick) D_801652C0[arg2]++;
     } else if ((player->unk_0C0 / DEGREES_CONVERSION_FACTOR) >= 6) {
         player->kartProps |= RIGHT_TURN;
         player->kartProps &= ~LEFT_TURN;
-        D_801652C0[arg2]++;
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks; ++tick) D_801652C0[arg2]++;
     } else {
         player->kartProps &= ~(LEFT_TURN | RIGHT_TURN);
         D_801652C0[arg2] = 0;
@@ -4107,7 +4486,7 @@ void func_80037BB4(Player* player, Vec3f arg1) {
     } else {
         if (player->unk_078 < 0) {
             if (((player->effects & 0x20000000) != 0x20000000) || (player->unk_228 >= 0x64)) {
-                player->rotation[1] += player->unk_078;
+                native_apply_yaw_delta(player, player->unk_078);
             }
             if (!(player->type & PLAYER_CPU)) {
                 if (gModeSelection == BATTLE) {
@@ -4120,7 +4499,7 @@ void func_80037BB4(Player* player, Vec3f arg1) {
             }
         } else {
             if (((player->effects & 0x20000000) != 0x20000000) || (player->unk_228 >= 0x64)) {
-                player->rotation[1] += player->unk_078;
+                native_apply_yaw_delta(player, player->unk_078);
             }
             if (!(player->type & PLAYER_CPU)) {
                 if (gModeSelection == BATTLE) {
@@ -4139,6 +4518,14 @@ void func_80037CFC(Player* player, struct Controller* controller, s8 arg2) {
 
     if (CVarGetInteger("gEnableMoonJump", 0)) {
         moon_jump(player, controller);
+    }
+
+    const bool trickSurface = player->surfaceType == CUSTOM_TRICK_JUMP ||
+                              player->surfaceType == CUSTOM_TRICK_JUMP_ALT;
+    if (trickSurface && (controller->button & R_TRIG) && controller->rawStickY < 0 &&
+        player->speed >= 2.5f && !(player->effects & (0x030B0CC0 | 8))) {
+        func_8008D570(player, arg2);
+        player->effects |= 0x2000;
     }
 
     if (((player->effects & 0x80) != 0x80) && ((player->effects & 0x40) != 0x40) &&
@@ -4447,7 +4834,7 @@ void func_80038BE4(Player* player, s16 arg1) {
     player->kartPropulsionStrength = (player->currentSpeed * player->currentSpeed) / 25.0f;
 }
 
-void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s8 playerId) {
+void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s16 playerId) {
     Vec3f sp114 = { 0.0, 0.0, 1.0 };
     Vec3f sp108 = { 0.0, 0.0, 0.0 };
     Vec3f spFC = { 0.0, 0.0, 0.0 };
@@ -4468,6 +4855,7 @@ void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s8 playerId) 
     f32 sp98;
     UNUSED s32 pad3;
     Vec3f sp88;
+    f64 nativeDisplacement[3] = { 0.0, 0.0, 0.0 };
     Vec3f sp7C;
     UNUSED s32 pad[10];
 
@@ -4476,7 +4864,7 @@ void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s8 playerId) 
     player->topSpeed = 250.0f;
     func_8002B830(player, playerId, arg2);
     apply_effect(player, playerId, arg2);
-    player->rotation[1] += player->unk_078;
+    native_apply_yaw_delta(player, player->unk_078);
     spF0[0] = 0;
     spF0[1] = 0;
     spF0[2] = 0;
@@ -4500,6 +4888,25 @@ void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s8 playerId) 
     sp88[0] += ((((((sp114[0] + spA4) + spF0[0])) - (sp88[0] * (0.12 * (player->kartFriction)))) / 6000.0) / 1);
     sp88[2] += ((((((sp114[2] + sp9C) + spF0[2])) - (sp88[2] * (0.12 * (player->kartFriction)))) / 6000.0) / 1);
     sp88[1] += ((((((sp114[1] + spA0) + spF0[1])) - (sp88[1] * (0.12 * (player->kartFriction)))) / 6000.0) / 1);
+    if (gNativeSimulationTickScale != 1.0f) {
+        const f64 drag = 1.0 - (0.12 * (f64) player->kartFriction) / 6000.0;
+        for (s32 axis = 0; axis < 3; ++axis) {
+            if (drag > 0.0 && isfinite(drag)) {
+                NativeFrameMotion motion = { 0.0, player->velocity[axis] };
+                const f64 impulse = (f64) sp88[axis] - drag * motion.velocity;
+                motion = NativeFrameMotion_Advance(motion, drag, impulse, gNativeSimulationTickScale);
+                nativeDisplacement[axis] = motion.position;
+                sp88[axis] = (f32) motion.velocity;
+                if (axis == 1) nativeDisplacement[axis] = NativeFrameMotion_GroundedVerticalDisplacement(
+                    nativeDisplacement[axis], player->collision.surfaceDistance[2], player->collision.orientationVector[1],
+                    player->velocity[1], sp88[1], player->kartHopVelocity);
+            } else {
+                nativeDisplacement[axis] = player->velocity[axis] * gNativeSimulationTickScale;
+                sp88[axis] = player->velocity[axis] +
+                    (sp88[axis] - player->velocity[axis]) * gNativeSimulationTickScale;
+            }
+        }
+    }
     if ((player->kartProps & LOSE_GP_RACE) == LOSE_GP_RACE) {
         player->kartProps &= ~LOSE_GP_RACE;
     }
@@ -4515,9 +4922,14 @@ void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s8 playerId) 
     spEC = posX + player->velocity[0];
     spE8 = posY + player->velocity[1];
     spE4 = posZ + player->velocity[2];
-    func_8002AAC0(player);
-    spE8 += player->kartHopVelocity;
-    spE8 -= 0.02;
+    if (gNativeSimulationTickScale != 1.0f) {
+        spEC = posX + (f32) nativeDisplacement[0];
+        spE8 = posY + (f32) nativeDisplacement[1];
+        spE4 = posZ + (f32) nativeDisplacement[2];
+    }
+    spE8 += func_8002AAC0(player);
+    if (gNativeSimulationTickScale == 1.0f) spE8 -= 0.02;
+    else spE8 -= 0.02f * gNativeSimulationTickScale;
     actor_terrain_collision(&player->collision, player->boundingBoxSize, spEC, spE8, spE4, player->oldPos[0],
                             player->oldPos[1], player->oldPos[2]);
     player->unk_058 = 0;
@@ -4525,7 +4937,7 @@ void func_80038C6C(Player* player, UNUSED Camera* camera, s8 arg2, s8 playerId) 
     player->unk_05C = 1.0f;
     calculate_orientation_matrix(player->orientationMatrix, 0, 1.0f, 0, player->rotation[1]);
     player->effects |= 8;
-    player->unk_0C2 += 1;
+    player->unk_0C2 += gNativeSimulationLegacyTicks;
     sp98 = player->collision.surfaceDistance[2];
     if (sp98 <= 0) {
         player->unk_0C2 = 0;

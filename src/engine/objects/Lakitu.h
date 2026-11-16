@@ -1,6 +1,7 @@
 #pragma once
 
 #include <libultraship.h>
+#include <string>
 #include <vector>
 #include "Object.h"
 #include "engine/World.h"
@@ -21,6 +22,7 @@ extern "C" {
 class OLakitu : public OObject {
 public:
     enum LakituType : uint32_t {
+        IDLE = 0,
         STARTER = 1,
         FINISH, // Checkered flag
         TOW, // Picks up an out of bounds player
@@ -46,6 +48,7 @@ public:
     virtual void Tick() override;
     virtual void Tick60fps() override;
     virtual void Draw(s32 playerId) override;
+    std::string DiagnosticState() const;
 
     void func_80078F64();
     void func_80079054(s32 playerId);
@@ -85,4 +88,12 @@ private:
     s32 mPlayerId;
     s32 mCameraId;
     s32 mLakituId;
+    s32 mLastActivationFrame = -1;
+    s32 mLastDrawFrame = -1;
+    const char* mLastDrawResult = "not called";
+    float mClipW = 0.0f;
+    float mNdcX = 0.0f;
+    float mNdcY = 0.0f;
+    float mNdcZ = 0.0f;
+    bool mHasProjection = false;
 };

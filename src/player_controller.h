@@ -6,63 +6,63 @@
 
 /* Function Prototypes */
 
-void func_8002E594(Player*, Camera*, s8, s8);
+void func_8002E594(Player*, Camera*, s8, s16);
 
 s32 get_player_index_for_player(Player*);
-void func_80027DA8(Player*, s8);
-void func_80027EDC(Player*, s8);
+void func_80027DA8(Player*, s16);
+void func_80027EDC(Player*, s16);
 
 void func_80029B4C(Player*, f32, f32, f32);
-void func_8002F730(Player* player, Camera* camera, s8 arg2, s8 playerId);
+void func_8002F730(Player* player, Camera* camera, s8 arg2, s16 playerId);
 
-void func_80028864(Player*, Camera*, s8, s8);
-void func_80028C44(Player*, Camera*, s8, s8);
-void func_80028D3C(Player*, Camera*, s8, s8);
-void func_80028E70(Player*, Camera*, s8, s8);
+void func_80028864(Player*, Camera*, s16, s8);
+void func_80028C44(Player*, Camera*, s16, s8);
+void func_80028D3C(Player*, Camera*, s16, s8);
+void func_80028E70(Player*, Camera*, s16, s8);
 void func_80028F70(void);
 
 void func_80029200(Player*, s8);
-void func_8002934C(Player*, Camera*, s8, s8);
+void func_8002934C(Player*, Camera*, s8, s16);
 
 void func_8002A194(Player*, f32, f32, f32);
 void func_8002A5F4(Vec3f, f32, Vec3f, f32, f32);
-void func_8002A704(Player*, s8);
-void func_8002A79C(Player*, s8);
-void func_8002A8A4(Player*, s8);
+void func_8002A704(Player*, s16);
+void func_8002A79C(Player*, s16);
+void func_8002A8A4(Player*, s16);
 void kart_hop(Player*);
-void func_8002AAC0(Player*);
+f32 func_8002AAC0(Player*);
 void func_8002AB70(Player*);
 void func_8002AE20(void);
 void func_8002AE28(void);
 void func_8002AE30(void);
-void func_8002AE38(Player*, s8, f32, f32, f32, f32);
+void func_8002AE38(Player*, s16, f32, f32, f32, f32);
 
 void func_8002B218(Player*);
-void apply_triggers(Player*, s8, s8);
-void func_8002B5C0(Player*, s8, s8);
-void func_8002B830(Player*, s8, s8);
+void apply_triggers(Player*, s16, s8);
+void func_8002B5C0(Player*, s16, s8);
+void func_8002B830(Player*, s16, s8);
 void func_8002B8A4(Player*, Player*);
-void func_8002B9CC(Player*, s8, s32);
+void func_8002B9CC(Player*, s16, s32);
 void func_8002BD58(Player*);
-void func_8002BF4C(Player*, s8);
+void func_8002BF4C(Player*, s16);
 
 void func_8002C11C(Player*);
-void func_8002C17C(Player*, s8);
-void update_player_environment_and_hazard_state(Player*, s8);
-void func_8002C7E4(Player*, s8, s8);
-void func_8002C954(Player*, s8, Vec3f);
-void apply_effect(Player*, s8, s8);
+void func_8002C17C(Player*, s16);
+void update_player_environment_and_hazard_state(Player*, s16);
+void func_8002C7E4(Player*, s16, s8);
+void func_8002C954(Player*, s16, Vec3f);
+void apply_effect(Player*, s16, s8);
 
-void func_8002D028(Player*, s8);
-void func_8002D268(Player*, Camera*, s8, s8);
+void func_8002D028(Player*, s16);
+void func_8002D268(Player*, Camera*, s8, s16);
 
 void set_player_height(Player*);
-void control_cpu_movement(Player*, Camera*, s8, s8);
+void control_cpu_movement(Player*, Camera*, s8, s16);
 
-void func_8002FCA8(Player*, s8);
+void func_8002FCA8(Player*, s16);
 void func_8002FE84(Player*, f32);
 
-f32 func_80030150(Player*, s8);
+f32 func_80030150(Player*, s16);
 void update_player_kart_hop(Player*);
 void detect_triple_a_combo_a_released(Player*);
 void detect_triple_a_combo_a_pressed(Player*);
@@ -102,7 +102,7 @@ void handle_a_press_for_all_players_during_race(void);
 s16 func_80038534(struct Controller*);
 s16 func_800388B0(struct Controller*);
 void func_80038BE4(Player*, s16);
-void func_80038C6C(Player*, Camera*, s8, s8);
+void func_80038C6C(Player*, Camera*, s8, s16);
 
 /* This is where I'd put my static data, if I had any */
 

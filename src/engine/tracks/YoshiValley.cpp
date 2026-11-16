@@ -185,9 +185,9 @@ void YoshiValley::DrawTrackObjects(s32 cameraId) {
 void YoshiValley::SomeSounds() {
 }
 
-void YoshiValley::WhatDoesThisDo(Player* player, int8_t playerId) {}
+void YoshiValley::WhatDoesThisDo(Player* player, int16_t playerId) {}
 
-void YoshiValley::WhatDoesThisDoAI(Player* player, int8_t playerId) {}
+void YoshiValley::WhatDoesThisDoAI(Player* player, int16_t playerId) {}
 
 void YoshiValley::Draw(ScreenContext* arg0) {
     gDPPipeSync(gDisplayListHead++);
@@ -202,7 +202,7 @@ void YoshiValley::DrawCredits() {
     gSPDisplayList(gDisplayListHead++, (Gfx*)(d_course_yoshi_valley_dl_18020));
 }
 
-void YoshiValley::Waypoints(Player* player, int8_t playerId) {
+void YoshiValley::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = gCopyNearestWaypointByPlayerId[playerId];
 }
 

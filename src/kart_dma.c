@@ -14,6 +14,7 @@
 #include <assets/textures/karts/wario_kart.h>
 #include <assets/textures/karts/donkeykong_kart.h>
 #include "render_player.h"
+#include "port/ExtraRacers.h"
 
 // Seemingly the largest compressed size for a frame for a given character
 // They seem slightly oversized too, either an alignemnt or safety thing
@@ -600,7 +601,7 @@ u8* gKartPalettes[] = {
  * @param screenId2 Second buffer index appears to always be 0-3.
  * @param index First buffer index always zero.
  **/
-void load_kart_texture(Player* player, s8 playerId, s8 screenId, s8 screenId2, s8 index) {
+void load_kart_texture(Player* player, s16 playerId, s8 screenId, s8 screenId2, s8 index) {
     gLastWheelFramesAlternate[screenId2][playerId] = kart_uses_alternate_wheel_frames(player);
     s32 temp = player->effects;
     s16 tyreSpeed = player->tyreSpeed;
@@ -631,9 +632,11 @@ void load_kart_texture(Player* player, s8 playerId, s8 screenId, s8 screenId2, s
             (const char*) gKartTextureTable0[player->characterId][player->animGroupSelector[screenId]]
                                             [player->animFrameSelector[screenId]][wheelid];
     }
+    gEncodedKartTexture[index][screenId2][playerId].unk_00 = ExtraRacers_Texture(playerId,
+        gEncodedKartTexture[index][screenId2][playerId].unk_00);
 }
 
-void load_kart_texture_non_blocking(Player* player, s8 arg1, s8 arg2, s8 arg3, s8 arg4) {
+void load_kart_texture_non_blocking(Player* player, s16 arg1, s8 arg2, s8 arg3, s8 arg4) {
     gLastWheelFramesAlternate[arg3][arg1] = kart_uses_alternate_wheel_frames(player);
     s32 temp = player->effects;
     s16 tyreSpeed = player->tyreSpeed;
@@ -664,9 +667,11 @@ void load_kart_texture_non_blocking(Player* player, s8 arg1, s8 arg2, s8 arg3, s
             (const char*) gKartTextureTable0[player->characterId][player->animGroupSelector[arg2]]
                                             [player->animFrameSelector[arg2]][wheelid];
     }
+    gEncodedKartTexture[arg4][arg3][arg1].unk_00 = ExtraRacers_Texture(arg1,
+        gEncodedKartTexture[arg4][arg3][arg1].unk_00);
 }
 
-void load_kart_palette(Player* player, s8 playerId, s8 screenId, s8 buffer) {
+void load_kart_palette(Player* player, s16 playerId, s8 screenId, s8 buffer) {
     u8* asset;
     size_t size;
     struct_D_802F1F80* temp_s0 = &gPlayerPalettesList[buffer][screenId][playerId];
@@ -676,15 +681,17 @@ void load_kart_palette(Player* player, s8 playerId, s8 screenId, s8 buffer) {
         case SCREEN_MODE_2P_SPLITSCREEN_VERTICAL:
             osInvalDCache(temp_s0, sizeof(struct_D_802F1F80));
 
-            size = ResourceGetTexSizeByName((const char*) gKartPalettes[player->characterId]);
-            asset = (u8*) LOAD_ASSET(gKartPalettes[player->characterId]);
+            const char* palettePath = ExtraRacers_Texture(playerId, (const char*)gKartPalettes[player->characterId]);
+            size = ResourceGetTexSizeByName(palettePath);
+            asset = (u8*) LOAD_ASSET(palettePath);
             memcpy(&temp_s0->kart_palette[0], asset, size);
             break;
         case SCREEN_MODE_3P_4P_SPLITSCREEN: // Code identical to above
             osInvalDCache(temp_s0, sizeof(struct_D_802F1F80));
 
-            size = ResourceGetTexSizeByName((const char*) gKartPalettes[player->characterId]);
-            asset = (u8*) LOAD_ASSET(gKartPalettes[player->characterId]);
+            const char* palettePathMulti = ExtraRacers_Texture(playerId, (const char*)gKartPalettes[player->characterId]);
+            size = ResourceGetTexSizeByName(palettePathMulti);
+            asset = (u8*) LOAD_ASSET(palettePathMulti);
             memcpy(&temp_s0->kart_palette[0], asset, size);
             break;
     }
@@ -716,7 +723,7 @@ void load_wheel_palette_non_blocking(UNUSED Player* player, const char* texture,
     osPiStartDma(&gDmaIoMesg, OS_MESG_PRI_NORMAL, OS_READ,
                  (uintptr_t) &_kart_texturesSegmentRomStart[SEGMENT_OFFSET(arg1)], vAddr, size, &gDmaMesgQueue);
 #else
-    u16* tex = (u16*) LOAD_ASSET(texture);
+    u16* tex = (u16*) LOAD_ASSET(ExtraRacers_PlayerTexture(player, texture));
     // size_t textureSize = ResourceGetTexSizeByName(texture);
     memcpy(vAddr, tex, size);
 #endif

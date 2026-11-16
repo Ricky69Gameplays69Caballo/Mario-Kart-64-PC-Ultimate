@@ -28,6 +28,7 @@ enum ProfilerGameEvent { THREAD5_START, LEVEL_SCRIPT_EXECUTE, BEFORE_DISPLAY_LIS
 enum ProfilerGfxEvent { TASKS_QUEUED, RSP_COMPLETE, RDP_COMPLETE };
 
 void profiler_log_thread5_time(enum ProfilerGameEvent eventID);
+bool profiler_get_last_game_frame_ms(double* simulation, double* displayList, double* graphics);
 void profiler_log_thread4_time(void);
 void profiler_log_gfx_time(enum ProfilerGfxEvent eventID);
 void profiler_log_vblank_time(void);

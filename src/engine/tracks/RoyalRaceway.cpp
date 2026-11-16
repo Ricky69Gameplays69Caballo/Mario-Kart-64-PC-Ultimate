@@ -153,7 +153,7 @@ void RoyalRaceway::InitTrackObjects() {
     }
 }
 
-void RoyalRaceway::WhatDoesThisDo(Player* player, int8_t playerId) {
+void RoyalRaceway::WhatDoesThisDo(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x180) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1E1)) {
         if (D_80165300[playerId] != 1) {
@@ -168,7 +168,7 @@ void RoyalRaceway::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void RoyalRaceway::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void RoyalRaceway::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x180) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1E1)) {
         if (D_80165300[playerId] != 1) {
@@ -229,7 +229,7 @@ void RoyalRaceway::DrawCredits() {
     gSPDisplayList(gDisplayListHead++, (Gfx*)(d_course_royal_raceway_dl_D8E8));
 }
 
-void RoyalRaceway::Waypoints(Player* player, int8_t playerId) {
+void RoyalRaceway::Waypoints(Player* player, int16_t playerId) {
     s16 waypoint = gNearestPathPointByPlayerId[playerId];
     if ((waypoint >= 0x258) && (waypoint < 0x2A4)) {
         player->nearestPathPointId = 0x258U;

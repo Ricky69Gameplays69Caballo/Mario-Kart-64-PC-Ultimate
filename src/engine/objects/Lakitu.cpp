@@ -3,11 +3,13 @@
 #include <libultra/gbi.h>
 #include "Lakitu.h"
 #include <vector>
+#include <fmt/format.h>
 #include "port/interpolation/FrameInterpolation.h"
 
 #include "port/Game.h"
 
 extern "C" {
+#include <libultra/gu.h>
 #include "racing/memory.h"
 #include "macros.h"
 #include "main.h"
@@ -58,14 +60,49 @@ OLakitu::OLakitu(s32 playerId, LakituType type) {
 
     _idx = _count;
     find_unused_obj_index(&gIndexLakituList[_count]);
-    init_object(gIndexLakituList[_count], (s32) type);
     mLakituId = gIndexLakituList[_count];
+    Activate(type);
 
     _count += 1;
 }
 
 void OLakitu::Activate(LakituType type) {
     init_object(mLakituId, (s32) type);
+    mLastActivationFrame = gGlobalTimer;
+    mLastDrawFrame = -1;
+    mLastDrawResult = "not called";
+    mHasProjection = false;
+}
+
+std::string OLakitu::DiagnosticState() const {
+    if (mLakituId < 0 || mLakituId >= OBJECT_LIST_SIZE) {
+        return fmt::format("player={} object={} invalid", mPlayerId + 1, mLakituId);
+    }
+    const Object& object = gObjectList[mLakituId];
+    const auto cameraId = gScreenContexts[mPlayerId].camera ? gScreenContexts[mPlayerId].camera->cameraId : -1;
+    auto line = fmt::format(
+        "player={} object={} camera={} viewport_camera={} behavior={} state={} timer={} visible={} "
+        "texture={} palette={} vertex={} size={}x{} alpha={} pos=({:.2f},{:.2f},{:.2f}) "
+        "activation_frame={} last_draw_frame={} last_draw_result={}",
+        mPlayerId + 1, mLakituId, mCameraId, cameraId, object.unk_0D8, object.state, object.timer,
+        is_obj_flag_status_active(mLakituId, 0x10) != 0, object.activeTexture != nullptr,
+        object.activeTLUT != nullptr, object.vertex != nullptr, object.textureWidth, object.textureHeight,
+        object.primAlpha, object.pos[0], object.pos[1], object.pos[2],
+        mLastActivationFrame, mLastDrawFrame, mLastDrawResult);
+    if (mHasProjection) {
+        line += fmt::format(" clip_w={:.3f} ndc=({:.3f},{:.3f},{:.3f})", mClipW, mNdcX, mNdcY, mNdcZ);
+    }
+    return line;
+}
+
+static void TransformLakituDiagnosticPoint(float (&point)[4], Mtx* fixed) {
+    float matrix[4][4];
+    guMtxL2F(matrix, fixed);
+    const float input[4] = { point[0], point[1], point[2], point[3] };
+    for (int i = 0; i < 4; ++i) {
+        point[i] = input[0] * matrix[0][i] + input[1] * matrix[1][i] +
+                   input[2] * matrix[2][i] + input[3] * matrix[3][i];
+    }
 }
 
 void OLakitu::Tick() {
@@ -122,7 +159,26 @@ void OLakitu::Draw(s32 cameraId) {
 
     objectIndex = mLakituId;
     camera = &cameras[cameraId];
-    if (is_obj_flag_status_active(objectIndex, 0x00000010) != 0) {
+    const bool visible = is_obj_flag_status_active(objectIndex, 0x00000010) != 0;
+    if (CVarGetInteger("gDiagnostics.DetailedCrashLogging", 0)) {
+        mLastDrawFrame = gGlobalTimer;
+        mLastDrawResult = visible ? "submitted" : "visibility flag off";
+        mHasProjection = false;
+        if (visible && camera->lookAtMatrix && camera->perspectiveMatrix) {
+            const auto& pos = gObjectList[objectIndex].pos;
+            float point[4] = { pos[0], pos[1], pos[2], 1.0f };
+            TransformLakituDiagnosticPoint(point, camera->lookAtMatrix);
+            TransformLakituDiagnosticPoint(point, camera->perspectiveMatrix);
+            mClipW = point[3];
+            if (mClipW != 0.0f) {
+                mNdcX = point[0] / mClipW;
+                mNdcY = point[1] / mClipW;
+                mNdcZ = point[2] / mClipW;
+                mHasProjection = true;
+            }
+        }
+    }
+    if (visible) {
         object = &gObjectList[objectIndex];
         object->orientation[0] = 0;
         object->orientation[1] = func_800418AC(object->pos[0], object->pos[2], camera->pos);
@@ -508,7 +564,7 @@ void OLakitu::init_obj_lakitu_red_flag_fishing(s32 objectIndex, s32 arg1) {
     clear_object_flag(objectIndex, 0x00000010);
     func_80073720(objectIndex);
     object_next_state(objectIndex);
-    func_800C8F80((u8) arg1, 0x0100FA28);
+    func_800C8F80(arg1, 0x0100FA28);
 }
 
 void OLakitu::func_80079A5C(s32 objectIndex, UNUSED Player* player) {
@@ -580,7 +636,7 @@ void OLakitu::update_object_lakitu_fishing(s32 objectIndex, s32 playerId) {
             break;
         case 5:
             func_800722CC(objectIndex, 1);
-            func_800C9018((u8) playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFA, 0x28));
+            func_800C9018(playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFA, 0x28));
             func_80072428(objectIndex);
             func_80073720(objectIndex);
             break;
@@ -613,7 +669,7 @@ void OLakitu::update_object_lakitu_fishing2(s32 objectIndex, s32 playerId) {
     switch (gObjectList[objectIndex].unk_0D6) {
         case 1:
             if (func_80086FA4(objectIndex) != 0) {
-                func_800C9060((u8) playerId, 0x1900A055U);
+                func_800C9060(playerId, 0x1900A055U);
                 func_80073654(objectIndex);
             }
             break;
@@ -642,7 +698,7 @@ void OLakitu::update_object_lakitu_fishing2(s32 objectIndex, s32 playerId) {
             func_800722CC(objectIndex, 4);
             func_800722CC(objectIndex, 8);
             func_80073654(objectIndex);
-            func_800C9060((u8) playerId, 0x1900A056U);
+            func_800C9060(playerId, 0x1900A056U);
             break;
         case 6:
             if (func_8007375C(objectIndex, 0x000000A0) != 0) {
@@ -659,7 +715,7 @@ void OLakitu::update_object_lakitu_fishing2(s32 objectIndex, s32 playerId) {
             func_80072428(objectIndex);
             player->lakituProps &= ~THAWING_EFFECT;
             func_800722CC(objectIndex, 1);
-            func_800C9018((u8) playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFA, 0x28));
+            func_800C9018(playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFA, 0x28));
             break;
     }
 
@@ -809,7 +865,7 @@ void OLakitu::func_8007A3F0(s32 objectIndex, s32 arg1) {
     func_80086F10(objectIndex, 6, &D_800E69B0);
     gObjectList[objectIndex].unk_0D6 = 0;
     object_next_state(objectIndex);
-    func_800C8F80((u8) arg1, 0x0100FA28);
+    func_800C8F80(arg1, 0x0100FA28);
 }
 
 void OLakitu::update_object_lakitu_reverse(s32 objectIndex, s32 playerId) {
@@ -839,7 +895,7 @@ void OLakitu::update_object_lakitu_reverse(s32 objectIndex, s32 playerId) {
                 func_80086F10(objectIndex, 6, &D_800E69F4);
                 gObjectList[objectIndex].unk_0D6 = 2;
                 gObjectList[objectIndex].unk_04C = 0x00000050;
-                func_800C9018((u8) playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFA, 0x28));
+                func_800C9018(playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFA, 0x28));
                 return;
             }
             return;

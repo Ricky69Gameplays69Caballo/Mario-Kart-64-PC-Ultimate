@@ -101,6 +101,10 @@ enum SURFACE_TYPE {
     /* 0x0F */ CAVE,         // DK Jungle cave
     /* 0x10 */ ROPE_BRIDGE,  // Bowser's Castle bridge 2, DK Jungle bridge
     /* 0x11 */ WOOD_BRIDGE,  // Frappe Snowland bridge, Bowser's Castle bridge 1,3, Yoshi Valley bridge 2
+    /* 0x97 */ CUSTOM_TRICK_JUMP_ALT = 0x97,
+    /* 0xEC */ CUSTOM_TRICK_JUMP = 0xEC,
+    /* 0xF9 */ CUSTOM_MUSHROOM_BOOST = 0xF9, // Amped Up / Tarmac64 mushroom surface
+    /* 0xFA */ CUSTOM_WATER = 0xFA,
     /* 0xFB */ WATER_SURFACE = 0xFB, // Water effect and Lakitu picks up the player
     /* 0xFC */ BOOST_RAMP_WOOD = 0xFC, // DK Jungle
     /* 0xFD */ OUT_OF_BOUNDS,          // DK Jungle river island oob / out of bounds

@@ -214,12 +214,12 @@ void ATruck::VehicleCollision(s32 playerId, Player* player) {
                 (((temp_f14) > -300.0)) && ((temp_f14) < 300.0)) {
                 if ((sVehicleSoundRenderCounter > 0) && (SomeFlags == 0)) {
                     sVehicleSoundRenderCounter -= 1;
-                    SomeFlags |= (RENDER_VEHICLE << playerId);
+                    SomeFlags |= (1u << playerId);
                     func_800C9D80(Position, Velocity, SoundBits);
                 }
             } else {
                 if (SomeFlags != 0) {
-                    SomeFlags &= ~(RENDER_VEHICLE << playerId);
+                    SomeFlags &= ~(1u << playerId);
                     if (SomeFlags == 0) {
                         sVehicleSoundRenderCounter += 1;
                         func_800C9EF4(Position, SoundBits);
@@ -229,7 +229,7 @@ void ATruck::VehicleCollision(s32 playerId, Player* player) {
 
             if (((temp_f12) > -200.0) && ((temp_f12) < 200.0) && ((temp_f22 > -20.0)) && (temp_f22 < 20.0) &&
                 (((temp_f14) > -200.0)) && ((temp_f14) < 200.0)) {
-                if (!(SomeFlagsTheSequel & ((1 << playerId)))) {
+                if (!(SomeFlagsTheSequel & ((1u << playerId)))) {
 
                     s32 var_s1 = 0;
                     u16 path = gPathCountByPathIndex[0];
@@ -260,7 +260,7 @@ void ATruck::VehicleCollision(s32 playerId, Player* player) {
                                         var_s1 = 1;
                                     }
                                 } else {
-                                    SomeFlagsTheSequel |= ((1 << playerId));
+                                    SomeFlagsTheSequel |= ((1u << playerId));
                                 }
                             }
                             break;
@@ -298,13 +298,13 @@ void ATruck::VehicleCollision(s32 playerId, Player* player) {
                                 }
                                 break;
                         }
-                        SomeFlagsTheSequel |= ((1 << playerId));
+                        SomeFlagsTheSequel |= ((1u << playerId));
                         func_800C98B8(Position, Velocity, soundBits2);
                     }
                 }
             } else {
-                if (SomeFlagsTheSequel & ((1 << playerId))) {
-                    SomeFlagsTheSequel &= ~((1 << playerId));
+                if (SomeFlagsTheSequel & ((1u << playerId))) {
+                    SomeFlagsTheSequel &= ~((1u << playerId));
                 }
             }
         }

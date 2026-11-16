@@ -4,6 +4,7 @@
 #include "port/CrashMonitor.h"
 #include "ship/window/gui/GuiMenuBar.h"
 #include "ship/window/gui/GuiElement.h"
+#include <cmath>
 #include <variant>
 #include "ship/utils/StringHelper.h"
 #include <spdlog/fmt/fmt.h>
@@ -11,7 +12,9 @@
 #include <tuple>
 #include "ResolutionEditor.h"
 #include "port/LocalMultiplayer.h"
+#include "port/ExtraRacers.h"
 #include "port/MultiplayerDisplays.h"
+#include <fast/backends/gfx_screen_config.h>
 
 #include "engine/tracks/Track.h"
 #include "engine/tracks/KalimariDesert.h"
@@ -27,6 +30,7 @@ extern s32 gMenuSelection;
 #include "audio/external.h"
 #include "defines.h"
 #include "save.h"
+#include "main.h"
 }
 
 namespace GameUI {
@@ -121,19 +125,24 @@ void PortMenu::AddSettings() {
                      .Tooltip("Changes the Theme of the Menu Widgets.")
                      .ComboMap(menuThemeOptions)
                      .DefaultIndex(Colors::LightBlue));
+    AddWidget(path, "Automatically fit PC menu", WIDGET_CVAR_CHECKBOX)
+        .CVar("gSettings.Menu.AutoFit")
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Use most of the available window and automatically scale text to its size. "
+            "Menu Scale adjusts readability further. Updates immediately when the window changes size."));
     AddWidget(path, "Menu Extent", WIDGET_CVAR_COMBOBOX)
         .CVar("gSettings.Menu.Extent")
+        .PreFunc([](WidgetInfo& info) { info.isHidden = CVarGetInteger("gSettings.Menu.AutoFit", 1); })
         .Options(ComboboxOptions()
                      .Tooltip("Changes the extent of the onscreen menu")
                      .ComboMap(menuExtentOptions)
                      .DefaultIndex(MenuExtent::Condensed));
 
-    AddWidget(path, "Menu Scale: %.0fx", WIDGET_CVAR_SLIDER_FLOAT)
+    AddWidget(path, "Menu Scale: %.2fx", WIDGET_CVAR_SLIDER_FLOAT)
         .CVar("gSettings.Menu.Scale")
-        .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger("gSettings.Menu.Extent", 0); })
         .Options(FloatSliderOptions()
-                     .Tooltip("Adjust the scale for the menu.")
-                     .Min(1.0f)
+                     .Tooltip("Adjust menu text size. With automatic fitting enabled, this multiplies the automatic scale. Ctrl-click the slider to type a value.")
+                     .Min(0.75f)
                      .Max(2.0f)
                      .DefaultValue(1.0f)
                      .Format("%.1f")
@@ -149,13 +158,10 @@ void PortMenu::AddSettings() {
             "Allows controller navigation of the Spaghetti menu (Settings, Enhancements,...)\nCAUTION: "
             "This will disable game inputs while the menu is visible.\n\nD-pad to move between "
             "items, A to select, B to move up in scope."));
-    AddWidget(path, "Cursor Always Visible", WIDGET_CVAR_CHECKBOX)
-        .CVar("gSettings.CursorVisibility")
-        .Callback([](WidgetInfo& info) {
-            Ship::Context::GetRawInstance()->GetWindow()->SetForceCursorVisibility(
-                CVarGetInteger("gSettings.CursorVisibility", 0));
-        })
-        .Options(CheckboxOptions().Tooltip("Makes the cursor always visible, even in full screen."));
+    AddWidget(path, "Hide mouse", WIDGET_CVAR_CHECKBOX)
+        .CVar("gSettings.HideMouse")
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Hides the mouse cursor during gameplay. The cursor remains visible in the PC menu."));
 #endif
     AddWidget(path, "Search In Sidebar", WIDGET_CVAR_CHECKBOX)
         .CVar("gSettings.Menu.SidebarSearch")
@@ -181,7 +187,26 @@ void PortMenu::AddSettings() {
         .Options(CheckboxOptions().DefaultValue(true).Tooltip(
             "Hold Tab while the game has keyboard focus to run gameplay as fast as the hardware allows. "
             "Temporarily bypasses FPS pacing, VSync waits and interpolation frames; audio is muted to avoid backlog. "
-            "Release Tab to restore normal speed. Takes priority over the alternate-assets Tab hotkey. Saved graphics settings are preserved."));
+            "Release Tab to restore normal speed. Takes priority over the alternate-assets Tab hotkey. Saved graphics settings are preserved."))
+        .PostFunc([](WidgetInfo&) {
+            static int ticks = 2;
+            static bool editing = false;
+            if (!editing) ticks = std::clamp(CVarGetInteger("gTabFastForwardTicks", 2), 1, 120);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+            ImGui::InputInt("TAB speed up tick rate", &ticks, 1, 2);
+            const bool active = ImGui::IsItemActive();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(
+                "Gameplay logic ticks per rendered frame while holding Tab with fast-forward enabled.\n"
+                "2 = normal tick count; 4 = twice the logic work; 8 = four times. Range: 1-120.\n"
+                "Applies to race/Battle intros, countdowns and gameplay. Release Tab to restore normal timing.\n"
+                "Type an integer, then press Enter or click away to save. Higher values use more CPU time per frame.");
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                ticks = std::clamp(ticks, 1, 120);
+                CVarSetInteger("gTabFastForwardTicks", ticks);
+                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+            }
+            editing = active;
+        });
     AddWidget(path, "Alt Assets Tab hotkey", WIDGET_CVAR_CHECKBOX)
         .CVar("gEnhancements.Mods.AlternateAssetsHotkey")
         .Options(
@@ -244,6 +269,30 @@ void PortMenu::AddSettings() {
     path.sidebarName = "Graphics";
     AddSidebarEntry("Settings", "Graphics", 3);
     AddWidget(path, "Renderer API (Needs reload)", WIDGET_VIDEO_BACKEND);
+
+    AddWidget(path, "Widescreen menu backgrounds", WIDGET_CVAR_CHECKBOX)
+        .CVar("gGraphics.WidescreenMenuBackgrounds")
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Extend the original title, game-select, player-select and course-select artwork for widescreen. "
+            "Turn off to use the original backgrounds and keep the character grid inside the 4:3 area. Changes apply immediately."));
+
+    AddWidget(path, "Racer render distance: %.2fx", WIDGET_CVAR_SLIDER_FLOAT)
+        .CVar(CVAR_RACER_RENDER_DISTANCE)
+        .Options(FloatSliderOptions().Min(1.f).Max(5.f).Step(0.05f).DefaultValue(2.f).Format("%.2fx").Tooltip(
+            "Keep racers visible farther away. 1x restores the original visibility check. "
+            "Drag the slider or type a multiplier below. Higher settings can reduce performance."))
+        .PostFunc([](WidgetInfo&) {
+            static float multiplier = 2.f;
+            static bool editing = false;
+            if (!editing) multiplier = std::clamp(CVarGetFloat(CVAR_RACER_RENDER_DISTANCE, 2.f), 1.f, 5.f);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+            ImGui::InputFloat("Racer render distance multiplier", &multiplier, 0.f, 0.f, "%.2f");
+            if (ImGui::IsItemDeactivatedAfterEdit() && std::isfinite(multiplier)) {
+                CVarSetFloat(CVAR_RACER_RENDER_DISTANCE, std::clamp(multiplier, 1.f, 5.f));
+                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+            }
+            editing = ImGui::IsItemActive();
+        });
 
     AddWidget(path, "Internal Resolution: %.0f%%", WIDGET_CVAR_SLIDER_FLOAT)
         .CVar(CVAR_INTERNAL_RESOLUTION)
@@ -315,17 +364,6 @@ void PortMenu::AddSettings() {
         .CVar("gMatchRefreshRate")
         .PreFunc([](WidgetInfo& info) { info.isHidden = mPortMenu->disabledMap.at(DISABLE_FOR_DIRECTX).active; })
         .Options(CheckboxOptions().Tooltip("Matches interpolation value to the current game's window refresh rate."));
-    AddWidget(path, "Jitter fix : >= % d FPS", WIDGET_CVAR_SLIDER_INT)
-        .CVar("gExtraLatencyThreshold")
-        .PreFunc([](WidgetInfo& info) { info.isHidden = mPortMenu->disabledMap.at(DISABLE_FOR_NOT_DIRECTX).active; })
-        .Options(IntSliderOptions()
-                     .Tooltip("When Interpolation FPS setting is at least this threshold, add one frame of input "
-                              "lag (e.g. 16.6 ms for 60 FPS) in order to avoid jitter. This setting allows the "
-                              "CPU to work on one frame while GPU works on the previous frame.\nThis setting "
-                              "should be used when your computer is too slow to do CPU + GPU work in time.")
-                     .Min(0)
-                     .Max(MAX_FPS)
-                     .DefaultValue(80));
     AddWidget(path, "Enable Vsync", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_VSYNC_ENABLED)
         .PreFunc([](WidgetInfo& info) { info.isHidden = mPortMenu->disabledMap.at(DISABLE_FOR_NO_VSYNC).active; })
@@ -372,28 +410,104 @@ void PortMenu::AddSettings() {
 int32_t motionBlurStrength;
 
 void PortMenu::AddMultiplayer() {
-    AddMenuEntry("Multiplayer", "gSettings.Menu.MultiplayerSidebarSection");
-    AddSidebarEntry("Multiplayer", "Local play", 1);
-    WidgetPath path = { "Multiplayer", "Local play", SECTION_COLUMN_1 };
-    auto outsideRace = [](WidgetInfo& info) {
-        info.options->disabled = !MultiplayerOptions_CanChange();
+    AddMenuEntry("Gameplay", "gSettings.Menu.MultiplayerSidebarSection");
+    AddSidebarEntry("Gameplay", "Local play", 1);
+    WidgetPath path = { "Gameplay", "Local play", SECTION_COLUMN_1 };
+    AddWidget(path, "200cc mode", WIDGET_CVAR_CHECKBOX)
+        .CVar("gEnable200cc")
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Add 200cc to the engine class selection for Grand Prix and VS."));
+    AddWidget(path, "Enable Custom CC", WIDGET_CVAR_CHECKBOX).CVar("gEnableCustomCC");
+    AddWidget(path, "Custom CC value", WIDGET_CUSTOM)
+        .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger("gEnableCustomCC", 0); })
+        .CustomFunction([](WidgetInfo&) {
+            static int value = 150;
+            static bool editing = false;
+            if (!editing) {
+                const double saved = CVarGetFloat("gCustomCC", 150.0f);
+                value = static_cast<int>(std::clamp(saved, 1.0, 2147483647.0));
+            }
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10.f);
+            ImGui::InputInt("Custom CC", &value, 0, 0);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                value = std::max(value, 1);
+                CVarSetFloat("gCustomCC", static_cast<float>(value));
+                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+            }
+            editing = ImGui::IsItemActive();
+        });
+
+
+    static const auto outsideRace = [](WidgetInfo& info) {
+        info.options->disabled = !MultiplayerOptions_CanChange() && !gDemoMode;
         info.options->disabledTooltip = "Return to the game menu to change multiplayer options.";
     };
     AddWidget(path, "Enable 8 players", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_MULTIPLAYER_EIGHT)
         .PreFunc(outsideRace)
-        .Callback([](WidgetInfo&) { MultiplayerOptions_OnEightChanged(); })
+        .Callback([](WidgetInfo&) {
+            if (CVarGetInteger(CVAR_MULTIPLAYER_EIGHT, 1)) CVarSetInteger(CVAR_MULTIPLAYER_SIXTEEN, 0);
+            MultiplayerOptions_OnEightChanged();
+        })
         .Options(CheckboxOptions().DefaultValue(true).Tooltip(
             "Adds 5P-8P choices to GAME SELECT: move right past 4P. Use the game controls to choose mode, class, characters and cup. "
             "F8 opens the optional PC lobby. Screen layouts automatically fill spare row space."));
     AddWidget(path, "Enable 16 players", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_MULTIPLAYER_SIXTEEN)
         .PreFunc(outsideRace)
-        .Callback([](WidgetInfo&) { MultiplayerOptions_OnSixteenChanged(); })
-        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+        .Callback([](WidgetInfo&) {
+            if (MultiplayerOptions_SixteenEnabled()) CVarSetInteger(CVAR_MULTIPLAYER_EIGHT, 0);
+            MultiplayerOptions_OnSixteenChanged();
+        })
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
             "Adds playable 9P-16P choices after 8P in GAME SELECT. Up to 16 humans can race; "
             "unused race slots are filled with CPU bots. Battle supports up to 16 humans, with no bots. Item boxes recover twice as fast in every mode. "
             "Time Trials with bots do not save records or ghosts. Applies to a new race or cup."));
+    AddWidget(path, "Enable extra maps", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_EXTRA_MAPS)
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { if (!gDemoMode) ExtraMaps_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Show experimental Amped Up cups in Grand Prix, VS and Time Trials. Extra-track Time Trial records and ghosts are not saved. Some course graphics, hazards and lap behavior are still being developed."));
+    AddWidget(path, "Enable extra characters", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_EXTRA_CHARACTERS)
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Adds the imported Deluxe and Dragon Ball Kart racers alongside the original eight. "
+            "Turn off to restore our previous eight-character selection screen. "
+            "Changing this option returns to the main game menu and is saved. Change it outside a race."));
+    AddWidget(path, "Deluxe characters", WIDGET_CVAR_CHECKBOX)
+        .CVar("gRacerSets.Deluxe")
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip("Show this character set in selection and random racers. Changing it returns to the main menu."));
+    AddWidget(path, "Dragon Ball characters", WIDGET_CVAR_CHECKBOX)
+        .CVar("gRacerSets.DragonBall")
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip("Show this character set in selection and random racers. Changing it returns to the main menu."));
+    AddWidget(path, "Pokemon characters", WIDGET_CVAR_CHECKBOX)
+        .CVar("gRacerSets.Pokemon")
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip("Show this character set in selection and random racers. Changing it returns to the main menu."));
+    AddWidget(path, "GTA San Andreas characters", WIDGET_CVAR_CHECKBOX)
+        .CVar("gRacerSets.GTA")
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip("Show the GTA San Andreas character set. Changes return to the main menu."));
+    AddWidget(path, "Simpsons characters", WIDGET_CVAR_CHECKBOX)
+        .CVar("gRacerSets.Simpsons").PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip("Show the Simpsons character set. Changes return to the main menu."));
+    AddWidget(path, "Slasher characters", WIDGET_CVAR_CHECKBOX)
+        .CVar("gRacerSets.Slasher").PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); })
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip("Show the Slasher Kart character set. Changes return to the main menu."));
+    AddWidget(path, "Evangelion characters", WIDGET_CVAR_CHECKBOX).CVar("gRacerSets.Eva").PreFunc(outsideRace).Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); }).Options(CheckboxOptions().DefaultValue(true));
+    AddWidget(path, "Evangelion Rebuild characters", WIDGET_CVAR_CHECKBOX).CVar("gRacerSets.EvaRebuild").PreFunc(outsideRace).Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); }).Options(CheckboxOptions().DefaultValue(true));
+    AddWidget(path, "Angry Birds characters", WIDGET_CVAR_CHECKBOX).CVar("gRacerSets.Birds").PreFunc(outsideRace).Callback([](WidgetInfo&) { ExtraRacers_OnChanged(); }).Options(CheckboxOptions().DefaultValue(true));
     static const std::unordered_map<int32_t, const char*> displayOptions = {
         {1, "1 screen"}, {2, "2 screens"}, {3, "3 screens"}
     };
@@ -410,6 +524,61 @@ void PortMenu::AddMultiplayer() {
     AddWidget(path, "Apply screen layout", WIDGET_BUTTON)
         .Callback([](WidgetInfo&) { MultiplayerDisplays_Refresh(); })
         .Options(ButtonOptions().Tooltip("Re-detect connected displays and apply the selected layout during a race."));
+    static const auto extraBotsTooltip =
+        fmt::format("Adds CPU racers to the next Grand Prix or VS race, up to {} total racers.", MAX_RACE_GRID);
+    AddWidget(path, "Enable extra bots", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_EXTRA_BOTS_ENABLED)
+        .PreFunc(outsideRace)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(extraBotsTooltip.c_str()))
+        .PostFunc([](WidgetInfo&) {
+            const int baseWithExtras = MultiplayerOptions_ExtraBotBaseGrid(1);
+            const int baseWithoutExtras = MultiplayerOptions_ExtraBotBaseGrid(0);
+            const int maxExtra = MAX_RACE_GRID - baseWithExtras;
+            const auto getExtra = [maxExtra] {
+                return std::clamp(CVarGetInteger(CVAR_EXTRA_BOT_PLAYERS, 0), 0, maxExtra);
+            };
+            const auto saveExtra = [](int extra) {
+                if (extra != CVarGetInteger(CVAR_EXTRA_BOT_PLAYERS, 0)) {
+                    CVarSetInteger(CVAR_EXTRA_BOT_PLAYERS, extra);
+                    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+                }
+            };
+
+            ImGui::BeginDisabled((!MultiplayerOptions_CanChange() && !gDemoMode) || !CVarGetInteger(CVAR_EXTRA_BOTS_ENABLED, 0));
+            static int extra = 0;
+            static int total = 0;
+            static bool editingExtra = false;
+            static bool editingTotal = false;
+
+            if (!editingExtra) extra = getExtra();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+            ImGui::InputInt("Extra racers", &extra, 0, 0);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                saveExtra(std::clamp(extra, 0, maxExtra));
+            }
+            editingExtra = ImGui::IsItemActive();
+
+            if (!editingTotal) {
+                const int savedExtra = getExtra();
+                total = savedExtra == 0 ? baseWithoutExtras : baseWithExtras + savedExtra;
+            }
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
+            ImGui::InputInt("Total racers", &total, 0, 0);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                const int boundedTotal = std::clamp(total, baseWithoutExtras, MAX_RACE_GRID);
+                saveExtra(std::max(0, boundedTotal - baseWithExtras));
+            }
+            editingTotal = ImGui::IsItemActive();
+            ImGui::EndDisabled();
+        });
+    AddWidget(path, "Enable Single-Player VS", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_SOLO_VS)
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) { MultiplayerOptions_OnBotsChanged(); })
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Adds VS to 1P Game. Pick one course and race against bots. "
+            "Uses an eight-racer grid, or sixteen with Enable 16 players, plus any extra bots. "
+            "Changing this option returns to the main game menu."));
     AddWidget(path, "Enable bots in 3+ players", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_MULTIPLAYER_BOTS)
         .PreFunc(outsideRace)
@@ -424,33 +593,28 @@ void PortMenu::AddMultiplayer() {
             "immediately gives control back. Counts active gameplay only; countdowns, pauses and results do not count. "
             "Race modes use the CPU driver; Battle uses basic opponent-seeking steering and item use. Applies immediately and is saved."))
         .PostFunc([](WidgetInfo&) {
-            static int seconds = 5;
+            static int seconds = 10;
             static bool editing = false;
-            if (!editing) seconds = std::clamp(CVarGetInteger(CVAR_AFK_SECONDS, 5), 1, 86400);
+            if (!editing) seconds = std::clamp(CVarGetInteger(CVAR_AFK_SECONDS, 10), 0, 86400);
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.f);
             ImGui::InputInt("AFK timeout (seconds)", &seconds, 0, 0);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("0 seconds enables immediate takeover while idle. Any controller input restores human control.");
             const bool active = ImGui::IsItemActive();
             if (ImGui::IsItemDeactivatedAfterEdit()) {
-                seconds = std::clamp(seconds, 1, 86400);
+                seconds = std::clamp(seconds, 0, 86400);
                 CVarSetInteger(CVAR_AFK_SECONDS, seconds);
                 Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
             }
             editing = active;
         });
-    AddWidget(path, "Enable race bomb karts (3+ players)", WIDGET_CVAR_CHECKBOX)
+    AddWidget(path, "Enable race bomb karts", WIDGET_CVAR_CHECKBOX)
         .CVar(CVAR_MULTIPLAYER_RACE_BOMBS)
         .Options(CheckboxOptions().DefaultValue(true).Tooltip(
-            "Turn the bomb-kart obstacles on race tracks on or off for three or more human players. "
+            "Turn the bomb-kart obstacles on race tracks on or off, including in single-player VS. "
             "Applies immediately and is saved. Eliminated-player bombs in Battle are controlled by the normal Battle rules."));
     AddWidget(path, "Options are saved. Move right past 4P in GAME SELECT for 5P-8P, then past 8P for 9P-16P. "
                     "Enable 16 players supports up to 16 humans in Grand Prix and VS, with bots in unused slots. "
                     "Battle keeps its current player count. With 16 players off, the Grand Prix bots option fills to eight.", WIDGET_TEXT);
-    AddWidget(path, "Visibility", WIDGET_SEPARATOR_TEXT);
-    AddWidget(path, "Enable Luigi Raceway video screen in multiplayer", WIDGET_CVAR_CHECKBOX)
-        .CVar("gMultiplayer.LuigiRacewayScreen")
-        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
-            "Show live gameplay on Luigi Raceway's trackside video billboard in multiplayer. "
-            "Turn off to restore the blank multiplayer screen. Applies immediately and is saved."));
     const auto minimapNumberEntry = [](WidgetInfo& info) {
         const auto options = std::static_pointer_cast<IntSliderOptions>(info.options);
         struct NumericState { int value = 0; bool editing = false; };
@@ -487,34 +651,6 @@ void PortMenu::AddMultiplayer() {
             std::static_pointer_cast<IntSliderOptions>(info.options)->flags = ImGuiSliderFlags_AlwaysClamp;
         })
         .PostFunc(minimapNumberEntry);
-    AddWidget(path, "Racer render distance: %dx", WIDGET_CVAR_SLIDER_INT)
-        .CVar(CVAR_RACER_RENDER_DISTANCE)
-        .Options(IntSliderOptions().Min(1).Max(5).Step(1).DefaultValue(2).Tooltip(
-            "Keep human and CPU racers visible farther away. 1x restores the original racer visibility check; "
-            "2x-5x extend the range and prevent early culling at wide screen edges. "
-            "Applies immediately to Grand Prix, VS and Battle for any player count, and is saved. "
-            "Higher settings can reduce performance. Track scenery keeps its normal visibility rules."));
-#ifdef _WIN32
-    AddSidebarEntry("Multiplayer", "Diagnostics", 1);
-    path = { "Multiplayer", "Diagnostics", SECTION_COLUMN_1 };
-    AddWidget(path, "Detailed crash logging", WIDGET_CVAR_CHECKBOX)
-        .CVar("gDiagnostics.DetailedCrashLogging")
-        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
-            "Records race state every quarter second and starts a separate Windows crash monitor. "
-            "Captures thread stacks and memory even for failures that bypass the game's crash handler. "
-            "Applies immediately and is saved. Turn it off after reproducing the crash."));
-    AddWidget(path, "Enable this before starting the race, then reproduce the crash. "
-                    "Reports, memory dumps and race snapshots are saved in the game's logs folder. "
-                    "The game may pause briefly while the crash dump is written.", WIDGET_TEXT);
-    AddWidget(path, "Crash monitor status", WIDGET_TEXT)
-        .PreFunc([](WidgetInfo& info) { info.name = CrashMonitor_Status(); });
-    AddWidget(path, "Open crash logs folder", WIDGET_BUTTON)
-        .Callback([](WidgetInfo&) {
-            const auto directory = std::filesystem::absolute(Ship::Context::GetPathRelativeToAppDirectory("logs"));
-            SDL_OpenURL(std::string("file:///" + directory.string()).c_str());
-        })
-        .Options(ButtonOptions().Size(Sizes::Inline));
-#endif
 }
 
 void PortMenu::AddEnhancements() {
@@ -546,12 +682,6 @@ void PortMenu::AddEnhancements() {
                      .DefaultValue(10000.0f)
                      .Tooltip("Say how Far the Frustrum are when 'Disable Culling' are enable")
                      .Step(10.0f));
-    AddWidget(path, "Enable Custom CC", WIDGET_CVAR_CHECKBOX).CVar("gEnableCustomCC");
-    AddWidget(path, "Custom CC", WIDGET_CVAR_SLIDER_FLOAT)
-        .CVar("gCustomCC")
-        .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger("gEnableCustomCC", 0); })
-        .Options(FloatSliderOptions().Min(0.0f).Max(1000.0f).DefaultValue(150.0f).Step(10.0f));
-
     AddWidget(path, "Enable Digital Speedometer", WIDGET_CVAR_CHECKBOX)
         .CVar("gEnableDigitalSpeedometer")
         .Options(CheckboxOptions().Tooltip("Welcome to the modern era"));
@@ -578,6 +708,25 @@ void PortMenu::AddEnhancements() {
 
     path = { "Enhancements", "Cheats", SECTION_COLUMN_1 };
     AddSidebarEntry("Enhancements", "Cheats", 3);
+    AddWidget(path, "Item boxes will only roll selected items", WIDGET_CVAR_CHECKBOX)
+        .CVar("gCheats.ItemFilterEnabled")
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Choose items below. Every race position and CPU can roll any selected item with equal probability. With no items selected, boxes give nothing."));
+    static const struct { const char* label; const char* cvar; } itemChoices[] = {
+        {"Banana", "gCheats.ItemBanana"}, {"Banana bunch", "gCheats.ItemBananaBunch"},
+        {"Green shell", "gCheats.ItemGreenShell"}, {"Triple green shells", "gCheats.ItemTripleGreenShell"},
+        {"Red shell", "gCheats.ItemRedShell"}, {"Triple red shells", "gCheats.ItemTripleRedShell"},
+        {"Blue shell", "gCheats.ItemBlueShell"}, {"Lightning", "gCheats.ItemLightning"},
+        {"Fake item box", "gCheats.ItemFakeBox"}, {"Star", "gCheats.ItemStar"},
+        {"Boo", "gCheats.ItemBoo"}, {"Mushroom", "gCheats.ItemMushroom"},
+        {"Double mushrooms", "gCheats.ItemDoubleMushroom"}, {"Triple mushrooms", "gCheats.ItemTripleMushroom"},
+        {"Golden mushroom", "gCheats.ItemGoldenMushroom"}
+    };
+    for (const auto& item : itemChoices) {
+        AddWidget(path, item.label, WIDGET_CVAR_CHECKBOX).CVar(item.cvar)
+            .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger("gCheats.ItemFilterEnabled", 0); })
+            .Options(CheckboxOptions().DefaultValue(true));
+    }
     AddWidget(path, "Skip to Grand Prix finale", WIDGET_BUTTON)
         .PreFunc([](WidgetInfo& info) {
             info.options->disabled = !LocalMP_CanSkipGrandPrixFinale();
@@ -710,6 +859,16 @@ void PortMenu::AddDevTools() {
     AddWidget(path, "Modify Interpolation Target FPS", WIDGET_CVAR_CHECKBOX)
         .CVar("gModifyInterpolationTargetFPS")
         .Options(CheckboxOptions().Tooltip("For testing frame interpolation."));
+    AddWidget(path, "Experimental native-rate races", WIDGET_CVAR_CHECKBOX)
+        .CVar("gExperimentalNativeRace")
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Unfinished development prototype: runs races at the presentation rate without generated interpolation frames. "
+            "Physics, camera, items, audio and game states can behave incorrectly. Menus and cutscenes remain fixed-rate."));
+    AddWidget(path, "Experimental native FPS cap (0 = uncapped): %d", WIDGET_CVAR_SLIDER_INT)
+        .CVar("gExperimentalNativeFrameCap")
+        .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger("gExperimentalNativeRace", 0); })
+        .Options(IntSliderOptions().Min(0).Max(1000).DefaultValue(0).Tooltip(
+            "Zero disables software frame pacing. VSync can still limit the presentation rate to your monitor."));
     AddWidget(path, "Interpolation Target FPS", WIDGET_CVAR_SLIDER_INT)
         .CVar("gInterpolationTargetFPS")
         .PreFunc([](WidgetInfo& info) { info.isHidden = !CVarGetInteger("gModifyInterpolationTargetFPS", 0); })
@@ -723,6 +882,160 @@ void PortMenu::AddDevTools() {
         .Options(CheckboxOptions().Tooltip("Draws the collision mesh instead of the track mesh"));
 
     AddSceneVisibility();
+
+    AddSidebarEntry("Developer", "Performance", 1);
+    path = { "Developer", "Performance", SECTION_COLUMN_1 };
+    AddWidget(path, "All large-race optimizations", WIDGET_CUSTOM)
+        .CustomFunction([](WidgetInfo&) {
+            static const char* const settings[] = {
+                CVAR_DISABLE_DEBUG_LOGS, CVAR_LARGE_GRID_LOW_HZ_BOTS, CVAR_LARGE_GRID_FAST_RANKING, CVAR_LARGE_GRID_BOT_PATH_BATCHING, CVAR_LARGE_GRID_MINIMAP, CVAR_LARGE_GRID_PALETTES,
+                CVAR_LARGE_GRID_CULLING, CVAR_LARGE_GRID_COLLISION_FILTER,
+                CVAR_LARGE_GRID_SKIP_BOT_CONTACTS, CVAR_EXPANDED_TEXTURE_CACHE,
+                CVAR_LARGE_GRID_DISTANT_BOTS,
+#ifdef _WIN32
+                CVAR_DX11_REUSE_DEPTH_STATES, CVAR_LARGE_GRID_DX11_QUEUE,
+#endif
+            };
+            int enabled = 0;
+            for (const char* setting : settings) enabled += CVarGetInteger(setting, 0) != 0;
+            bool all = enabled == static_cast<int>(std::size(settings));
+            if (enabled > 0 && !all) ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, true);
+            const bool changed = ImGui::Checkbox("Enable all 500+ player optimizations", &all);
+            if (enabled > 0 && enabled < static_cast<int>(std::size(settings))) ImGui::PopItemFlag();
+            if (changed) {
+                for (const char* setting : settings) CVarSetInteger(setting, all ? 1 : 0);
+                Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+            }
+        });
+    AddWidget(path, "Disable all debug logs", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_DISABLE_DEBUG_LOGS)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Turns off game logging, race snapshots, audio traces, and crash reports at any racer count."));
+    AddWidget(path, "500+ players optimization - Fast race ranking", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_FAST_RANKING)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Use a faster ranking algorithm for races with 500 or more racers."));
+    AddWidget(path, "500+ players optimization - Lower bot logic rate", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_LOW_HZ_BOTS)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Update decisions less often for bots away from human players. Nearby bots and movement still update each tick; distant behavior may be less precise."));
+    AddWidget(path, "500+ players optimization - Distant bot path updates", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_BOT_PATH_BATCHING)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Stagger path searches for distant bots while keeping their steering and acceleration updated. Nearby bots update normally."));
+    AddWidget(path, "500+ players optimization - Minimap batching", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_MINIMAP)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Reuse drawing state for adjacent minimap markers in races with 500 or more racers."));
+    AddWidget(path, "500+ players optimization - Kart texture reuse", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_PALETTES)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Share prepared kart textures when their sprite frames and palettes match in races with 500 or more racers."));
+    AddWidget(path, "500+ players optimization - Offscreen kart culling", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_CULLING)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Skip drawing karts fully outside the camera view in races with 500 or more racers."));
+    AddWidget(path, "500+ players optimization - Kart collision filtering", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_COLLISION_FILTER)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Skip detailed collision checks for karts that are too far apart to touch."));
+    AddWidget(path, "500+ players optimization - Skip bot-to-bot contact", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_SKIP_BOT_CONTACTS)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Bots pass through each other. Contact with human racers, items and track hazards still works."));
+    AddWidget(path, "Graphics optimization - Larger texture cache", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_EXPANDED_TEXTURE_CACHE)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Keep more textures in graphics memory to reduce texture reuploads in crowded races."));
+    AddWidget(path, "500+ players optimization - Limit distant bot drawing", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_DISTANT_BOTS)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Hide distant bot karts and their effects. Nearby bots and local players keep their normal graphics. "
+            "All racers continue racing and appear on the minimap."));
+#ifdef _WIN32
+    AddWidget(path, "DirectX 11 - Reuse depth states", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_DX11_REUSE_DEPTH_STATES)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Reuse existing depth-test settings when submitting draws in DirectX 11."));
+    AddWidget(path, "500+ players optimization - DirectX 11 presentation queue", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_LARGE_GRID_DX11_QUEUE)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Allow one more frame in the presentation queue to overlap CPU and GPU work. "
+            "May slightly increase input latency."));
+#endif
+
+    AddSidebarEntry("Developer", "Race tools", 1);
+    path = { "Developer", "Race tools", SECTION_COLUMN_1 };
+    static const auto outsideRace = [](WidgetInfo& info) {
+        info.options->disabled = !MultiplayerOptions_CanChange() && !gDemoMode;
+        info.options->disabledTooltip = "Return to the game menu to change bot balance.";
+    };
+    static std::string savedLocationStatus = "";
+    AddWidget(path, "Save location", WIDGET_BUTTON)
+        .Callback([](WidgetInfo&) { savedLocationStatus = Diagnostics_SaveLocation(); })
+        .Options(ButtonOptions().Size(Sizes::Inline).Tooltip(
+            "Save the track, race time, and every local player's position and camera to logs/saved-locations.txt."));
+    AddWidget(path, "Saved location status", WIDGET_TEXT)
+        .PreFunc([](WidgetInfo& info) { info.name = savedLocationStatus; });
+    AddWidget(path, "Infinite Time Trial mushrooms", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_TT_INFINITE_MUSHROOMS)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "In Time Trials, a new mushroom appears as soon as you use one. "
+            "Time Trial records and ghosts are not saved while this is on."));
+    AddWidget(path, "Enable Luigi Raceway and Wario Stadium video screens in multiplayer", WIDGET_CVAR_CHECKBOX)
+        .CVar("gMultiplayer.LuigiRacewayScreen")
+        .Options(CheckboxOptions().DefaultValue(true).Tooltip(
+            "Show live gameplay on Luigi Raceway's and Wario Stadium's video screens in multiplayer. "
+            "Turn off to restore the blank multiplayer screens. Applies immediately and is saved."));
+    AddWidget(path, "Balanced Bots", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_BALANCED_BOTS)
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) {
+            if (CVarGetInteger(CVAR_BALANCED_BOTS, 0)) CVarSetInteger(CVAR_REAL_BOT_BALANCE, 0);
+        })
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Gives each regular CPU racer a different pace target in Grand Prix and VS. "
+            "The two rivals keep their original behavior. Harder CPU takes precedence."));
+    AddWidget(path, "Real Balance", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_REAL_BOT_BALANCE)
+        .PreFunc(outsideRace)
+        .Callback([](WidgetInfo&) {
+            if (CVarGetInteger(CVAR_REAL_BOT_BALANCE, 0)) CVarSetInteger(CVAR_BALANCED_BOTS, 0);
+        })
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Spreads all CPU racers evenly from 100% to 86% of the course pace, including rivals and extra bots. "
+            "Bots follow their assigned pace without rival catch-up or pack adjustments. Harder CPU takes precedence."));
+
+#ifdef _WIN32
+    AddSidebarEntry("Developer", "Diagnostics", 1);
+    path = { "Developer", "Diagnostics", SECTION_COLUMN_1 };
+    AddWidget(path, "Large race performance capture", WIDGET_CVAR_CHECKBOX)
+        .CVar("gDiagnostics.PerformanceCapture")
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Records aggregate frame, game, CPU path and graphics submission timings every five seconds in logs/performance-capture.csv, even when debug logs are disabled."));
+    AddWidget(path, "Detailed crash logging", WIDGET_CVAR_CHECKBOX)
+        .CVar("gDiagnostics.DetailedCrashLogging")
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Records race state and Lakitu visibility every quarter second and starts a separate Windows crash monitor. "
+            "Captures thread stacks and memory even for failures that bypass the game's crash handler. "
+            "Applies immediately and is saved. Turn it off after reproducing the crash."));
+    AddWidget(path, "Enable this before starting the race, then reproduce the crash. "
+                    "Reports, memory dumps and race snapshots are saved in the game's logs folder. "
+                    "The game may pause briefly while the crash dump is written.", WIDGET_TEXT);
+    AddWidget(path, "Crash monitor status", WIDGET_TEXT)
+        .PreFunc([](WidgetInfo& info) { info.name = CrashMonitor_Status(); });
+    AddWidget(path, "Advanced audio debugging", WIDGET_CVAR_CHECKBOX)
+        .CVar(CVAR_ADVANCED_AUDIO_DEBUGGING)
+        .Options(CheckboxOptions().DefaultValue(false).Tooltip(
+            "Records sound requests, channel starts, cancellations and mixer buffer levels in logs/audio-debug.log. "
+            "Enable before reproducing an audio glitch, then turn off to finish the capture."));
+    AddWidget(path, "Open logs folder", WIDGET_BUTTON)
+        .Callback([](WidgetInfo&) {
+            const auto directory = std::filesystem::absolute(Ship::Context::GetPathRelativeToAppDirectory("logs"));
+            SDL_OpenURL(std::string("file:///" + directory.string()).c_str());
+        })
+        .Options(ButtonOptions().Size(Sizes::Inline));
+#endif
 
     path = { "Developer", "Gfx Debugger", SECTION_COLUMN_1 };
     AddSidebarEntry("Developer", "Gfx Debugger", 1);
@@ -808,10 +1121,43 @@ PortMenu::PortMenu(const std::string& consoleVariable, const std::string& name)
 
 void PortMenu::InitElement() {
     Ship::Menu::InitElement();
+    const int legacyDistance = CVarGetInteger(CVAR_RACER_RENDER_DISTANCE, 0);
+    if (legacyDistance != 0) {
+        CVarSetFloat(CVAR_RACER_RENDER_DISTANCE, static_cast<float>(std::clamp(legacyDistance, 1, 5)));
+    }
+    if (CVarGetInteger(CVAR_REAL_BOT_BALANCE, 0) && CVarGetInteger(CVAR_BALANCED_BOTS, 0)) {
+        CVarSetInteger(CVAR_BALANCED_BOTS, 0);
+    }
     AddSettings();
     AddEnhancements();
     AddMultiplayer();
     AddDevTools();
+
+    AddMenuEntry("About", "gSettings.Menu.AboutSidebarSection");
+    AddSidebarEntry("About", "Credits", 1);
+    WidgetPath credits = { "About", "Credits", SECTION_COLUMN_1 };
+    const auto addCreditLink = [&](const char* label, const char* url) {
+        AddWidget(credits, label, WIDGET_BUTTON)
+            .Callback([](WidgetInfo& widget) { SDL_OpenURL(widget.options->tooltip); })
+            .Options(ButtonOptions().Tooltip(url));
+    };
+    AddWidget(credits, "Ricky Gameplays", WIDGET_SEPARATOR_TEXT);
+    addCreditLink("Ricky Gameplays on YouTube", "https://www.youtube.com/@Ricky_Gameplays-Caballo");
+    addCreditLink("Ricky Gameplays releases",
+                  "https://github.com/Ricky69Gameplays69Caballo/Mario-kart-64-5-players-Ricky-Gameplays/releases");
+
+    AddWidget(credits, "Original port and mods", WIDGET_SEPARATOR_TEXT);
+    addCreditLink("SpaghettiKart by Harbour Masters", "https://github.com/HarbourMasters/SpaghettiKart");
+    addCreditLink("Mario Kart 64 - Amped Up by Litronom", "https://gamebanana.com/mods/613207");
+    addCreditLink("Dragon Ball Kart 64 by ImmaVegeta", "https://n64squid.com/homebrew/roms/dragon-ball-kart-64/");
+    addCreditLink("Pokemon Kart 64 by shrugboat", "https://kotaku.com/games/pokemon-kart-64");
+    addCreditLink("GTA San Andreas Kart 2.0 by TokattaMusic", "https://gamebanana.com/mods/553919");
+    addCreditLink("Simpson Kart 64 by Smashedbrothersgaming", "https://gamebanana.com/mods/553917");
+    addCreditLink("Slasher Kart 64 by smashedbrothers7", "https://gamebanana.com/mods/553911");
+    addCreditLink("Evangelion Kart 64", "https://gamebanana.com/mods/644048");
+    addCreditLink("Evangelion Kart 64 Rebuild Edition", "https://gamebanana.com/mods/644053");
+    addCreditLink("Angry Birds Kart 64", "https://gamebanana.com/mods/644055");
+    addCreditLink("Mario Kart 64 Deluxe (Sonic, Link and more)", "https://gamebanana.com/mods/336637");
 
     if (CVarGetInteger("gSettings.Menu.SidebarSearch", 0)) {
         InsertSidebarSearch();

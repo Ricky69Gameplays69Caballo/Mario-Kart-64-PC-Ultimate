@@ -504,7 +504,8 @@ void func_802A4D18(void) {
 
 void func_802A4EF4(void) {
     if (LocalMP_IsActive()) {
-        for (s32 i = 0; i < LocalMP_RacerCount(); i++) func_8001F394(&gPlayers[i]);
+        // Only local players have cameras; CPU racers have no camera to update.
+        for (s32 i = 0; i < LocalMP_Count(); i++) func_8001F394(&gPlayers[i]);
         return;
     }
     switch (gActiveScreenMode) {
@@ -711,8 +712,16 @@ void render_screens(ScreenContext* screen, s32 mode, s32 someId, s32 playerId) {
 
     if (CVarGetInteger("gDrawParticles", true) == true) {
         if (LocalMP_IsActive()) {
-            for (s8 racer = 0; racer < LocalMP_RacerCount(); racer++)
-                func_8006E7CC(&gPlayers[racer], racer, screenId);
+            const s32 racers = LocalMP_RacerCount();
+            const bool limitDistantBots = gGamestate == RACING && racers >= LARGE_GRID_OPTIMIZATION_MIN_RACERS &&
+                                         CVarGetInteger(CVAR_LARGE_GRID_DISTANT_BOTS, 0);
+            const s32 localPlayers = limitDistantBots ? LocalMP_Count() : 0;
+            for (s32 racer = 0; racer < racers; racer++) {
+                Player* player = &gPlayers[racer];
+                if (!limitDistantBots || !is_distant_bot_for_rendering(player, camera, racer, localPlayers)) {
+                    func_8006E7CC(player, racer, screenId);
+                }
+            }
         } else switch (playerId) { // Render player particles or some effect
             case 0: func_80021B0C(); break;
             case 1: func_80021C78(); break;

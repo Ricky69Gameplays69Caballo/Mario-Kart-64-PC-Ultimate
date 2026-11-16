@@ -25,6 +25,10 @@ extern "C" {
 #include "code_800029B0.h"
 
 extern s32 gTrophyIndex;
+extern bool gQuickTimeTrial;
+void PerfDiagMark(int section);
+extern bool gRace200cc;
+extern bool gRaceCustomCC;
 
 #ifdef __cplusplus
 extern TrackEditor::Editor gEditor;
@@ -38,6 +42,14 @@ World* GetWorld(void); // Retrieve the world instance
 void CM_RequestReset(void); // Queue a game reset; applied at the top of the next game frame
 #endif
 // NOLINTBEGIN(readability-identifier-naming)
+
+#define CVAR_DISABLE_DEBUG_LOGS "gDiagnostics.DisableDebugLogs"
+#define CVAR_ADVANCED_AUDIO_DEBUGGING "gDiagnostics.AdvancedAudioDebugging"
+extern bool gAudioDiagnosticsEnabled;
+void AudioDiagnostics_Record(const char* event, u32 sound, s32 player, s32 listener, s32 channel);
+void AudioDiagnostics_RecordBuffer(s32 buffered, s32 target, s32 generated, bool fastForward);
+
+const char* Diagnostics_SaveLocation(void);
 
 void Graphics_PushFrame(Gfx* pool);
 
@@ -103,7 +115,7 @@ void CM_DrawParticles(s32 cameraId);
 
 void CM_RaceDrawSky(ScreenContext* screen, s32 someId);
 
-void CM_Waypoints(Player* player, int8_t playerId);
+void CM_Waypoints(Player* player, int16_t playerId);
 
 void CM_SomeCollisionThing(Player* player, Vec3f arg1, Vec3f arg2, Vec3f arg3, f32* arg4, f32* arg5, f32* arg6,
                            f32* arg7);
@@ -118,9 +130,9 @@ void CM_SomeSounds();
 
 void CM_CreditsSpawnActors();
 
-void CM_WhatDoesThisDo(Player* player, int8_t playerId);
+void CM_WhatDoesThisDo(Player* player, int16_t playerId);
 
-void CM_WhatDoesThisDoAI(Player* player, int8_t playerId);
+void CM_WhatDoesThisDoAI(Player* player, int16_t playerId);
 
 void CM_SetStaffGhost();
 
@@ -188,6 +200,7 @@ bool IsKalimariDesert();
 bool IsSherbetLand();
 bool IsRainbowRoad();
 bool IsWarioStadium();
+bool CM_IsTrackResource(const char* resourceName);
 bool IsBlockFort();
 bool IsSkyscraper();
 bool IsDoubleDeck();
@@ -231,6 +244,9 @@ void* GetCup();
 
 void CM_RunGarbageCollector(void);
 void CM_ResetAudio(void);
+
+void Diagnostics_BeginLightningRace(void);
+void Diagnostics_RecordLightningUse(int playerId);
 
 NORETURN void CM_ThrowRuntimeError(const char* fmt, ...)
 #if defined(__GNUC__) || defined(__clang__)

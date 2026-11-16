@@ -55,6 +55,7 @@ typedef struct MinimapProps {
     const char* Texture;
     int16_t Width;
     int16_t Height;
+    bool RawTexture; // Custom PNG minimaps use raw I4 pixels.
     IVector2D Pos[2]; // Minimap position for players 1 and 2. 3/4 player mode is hard-coded to the center.
     int32_t PlayerX; // The offset to place the player markers
     int32_t PlayerY;
@@ -116,6 +117,8 @@ typedef struct Properties {
     SkyboxColours Skybox;
     enum MusicSeq Sequence;
     float WaterLevel; // Used for effects, and Lakitu pick up height. Not necessarily the visual water model height.
+    uint8_t RescueOnWaterContact;
+    uint8_t DryRescue; // rescue at WaterLevel without water effects
 
 #ifdef __cplusplus
     nlohmann::json to_json() const {
@@ -175,6 +178,8 @@ typedef struct Properties {
         j["Sequence"] = static_cast<int>(Sequence);
 
         j["WaterLevel"] = static_cast<float>(WaterLevel);
+        if (RescueOnWaterContact) j["RescueOnWaterContact"] = true;
+        if (DryRescue) j["DryRescue"] = true;
         #undef CAST_TO_INT
 
         return j;
@@ -285,6 +290,8 @@ typedef struct Properties {
 
         Sequence = static_cast<MusicSeq>(j.at("Sequence").get<int>());
         WaterLevel = j.at("WaterLevel").get<float>();
+        RescueOnWaterContact = j.value("RescueOnWaterContact", false);
+        DryRescue = j.value("DryRescue", false);
     }
     void SetText(char* name, const char* title, size_t bufferSize) {
         // Copy the title into the name buffer, ensuring it's null-terminated and within bounds
@@ -360,12 +367,12 @@ public:
     virtual void DrawTrackObjects(s32 cameraId);
     virtual void SomeSounds();
     virtual void CreditsSpawnActors();
-    virtual void WhatDoesThisDo(Player*, int8_t);
-    virtual void WhatDoesThisDoAI(Player*, int8_t);
+    virtual void WhatDoesThisDo(Player*, int16_t playerId);
+    virtual void WhatDoesThisDoAI(Player*, int16_t playerId);
     virtual void SetStaffGhost();
     virtual void Draw(ScreenContext*);
     virtual void DrawCredits();
-    virtual void Waypoints(Player* player, int8_t playerId);
+    virtual void Waypoints(Player* player, int16_t playerId);
     virtual f32 GetWaterLevel(FVector pos, struct Collision* collision);
     virtual void Tick();
     // Draw transparent models (water, signs, arrows, etc.) 

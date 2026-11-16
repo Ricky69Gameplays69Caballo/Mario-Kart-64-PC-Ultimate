@@ -95,9 +95,11 @@ void update_actor_green_shell(struct ShellActor* shell) {
                 if (shell->rotAngle < 0) {
                     shell->state = 2;
                     shell->someTimer = 0x001E;
-                    func_800C9060(shell->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
-                    func_800C90F4(shell->playerId,
-                                  (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x00));
+                    if (player->type & PLAYER_HUMAN) {
+                        func_800C9060(shell->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
+                        func_800C90F4(shell->playerId,
+                                      (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x00));
+                    } else Audio_PlayNearbyBotItem(shell->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
                     add_green_shell_in_unexpired_actor_list(CM_FindActorIndex(shell));
                 }
             } else {
@@ -105,9 +107,11 @@ void update_actor_green_shell(struct ShellActor* shell) {
                 if (shell->rotAngle > 0) {
                     shell->state = 2;
                     shell->someTimer = 0x001E;
-                    func_800C9060(shell->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
-                    func_800C90F4(shell->playerId,
-                                  (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x00));
+                    if (player->type & PLAYER_HUMAN) {
+                        func_800C9060(shell->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
+                        func_800C90F4(shell->playerId,
+                                      (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x00));
+                    } else Audio_PlayNearbyBotItem(shell->playerId, SOUND_ARG_LOAD(0x19, 0x00, 0x80, 0x04));
                     add_green_shell_in_unexpired_actor_list(CM_FindActorIndex(shell));
                 }
             }

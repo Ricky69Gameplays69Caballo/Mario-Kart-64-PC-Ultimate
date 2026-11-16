@@ -1,5 +1,6 @@
 #include <libultraship.h>
 #include <stdio.h>
+#include <string.h>
 #include <macros.h>
 #include <common_structs.h>
 #include <defines.h>
@@ -24,6 +25,12 @@
 #include "engine/GameAPI.h"
 #include "port/Game.h"
 #include "port/LocalMultiplayer.h"
+#include "port/NativeFrameClock.h"
+#include "port/NativeFrameSmoothing.h"
+
+static double native_camera_weight(double weight) {
+    return NativeFrameSmoothingWeight(weight, gNativeSimulationTickScale);
+}
 
 f32 D_800DDB30[] = { 0.4f, 0.6f, 0.275f, 0.3f };
 
@@ -399,7 +406,7 @@ void func_8001CA78(UNUSED Player* player, Camera* camera, Vec3f arg2, f32* arg3,
     }
     temp_f16 = D_80165230[7] + sp68[2];
     temp_f18 = sp68[1] + (temp_s2->y + D_80164A30 + 6.0f);
-    move_f32_towards(&D_80164A30, 0, 0.02f);
+    move_f32_towards(&D_80164A30, 0, (f32) native_camera_weight(0.02f));
     posX = camera->pos[0];
     *arg3 = ((var_f14 - posX) * 1) + posX;
     posY = camera->pos[1];
@@ -428,7 +435,7 @@ void func_8001CCEC(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     var_v1 = player->unk_DB4.unk0;
     var_f2 = player->unk_DB4.unk8;
 
-    var_v1++;
+    var_v1 += gNativeSimulationLegacyTicks;
     temp_f0 = ((var_f2 * var_v1) - (0.7 * (var_v1 * var_v1)));
     if ((var_v1 != 0) && (temp_f0 < 0)) {
         var_v1 = 0;
@@ -444,7 +451,7 @@ void func_8001CCEC(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     player->unk_DB4.unk8 = var_f2;
     var_v0 = camera->unk_94.unk_8;
     var_f0 = camera->unk_94.unk_0;
-    var_v0++;
+    var_v0 += gNativeSimulationLegacyTicks;
     temp_f12 = (var_v0 * var_f0) - (1.25 * (var_v0 * var_v0));
     if ((var_v0 != 0) && (temp_f12 < 0)) {
         var_v0 = 0;
@@ -461,17 +468,17 @@ void func_8001CCEC(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     camera->unk_94.unk_8 = var_v0;
     camera->unk_94.unk_0 = var_f0;
     if (D_80164678[index] == 2) {
-        move_f32_towards(&D_80164A38[index], 20.0f, 0.1f);
-        move_f32_towards(&D_80164A48[index], 1.5f, 0.1f);
-        D_80164A78[index] += 0.1;
+        move_f32_towards(&D_80164A38[index], 20.0f, (f32) native_camera_weight(0.1f));
+        move_f32_towards(&D_80164A48[index], 1.5f, (f32) native_camera_weight(0.1f));
+        D_80164A78[index] += 0.1 * gNativeSimulationTickScale;
         if (D_80164A78[index] >= 1) {
             D_80164A78[index] = 1;
         }
 
     } else {
-        move_f32_towards(&D_80164A38[index], 0, 0.1f);
-        move_f32_towards(&D_80164A48[index], 0, 0.1f);
-        D_80164A78[index] -= 0.1;
+        move_f32_towards(&D_80164A38[index], 0, (f32) native_camera_weight(0.1f));
+        move_f32_towards(&D_80164A48[index], 0, (f32) native_camera_weight(0.1f));
+        D_80164A78[index] -= 0.1 * gNativeSimulationTickScale;
         if (D_800DDB30[gActiveScreenMode] >= D_80164A78[index]) {
             D_80164A78[index] = D_800DDB30[gActiveScreenMode];
         }
@@ -481,22 +488,22 @@ void func_8001CCEC(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
             case SCREEN_MODE_2P_SPLITSCREEN_HORIZONTAL:
             case SCREEN_MODE_2P_SPLITSCREEN_VERTICAL:
             case SCREEN_MODE_3P_4P_SPLITSCREEN:
-                move_f32_towards(&D_80164A90[index], 20, 0.02f);
-                move_f32_towards(&D_80164AA0[index], 10, 0.02f);
+                move_f32_towards(&D_80164A90[index], 20, (f32) native_camera_weight(0.02f));
+                move_f32_towards(&D_80164AA0[index], 10, (f32) native_camera_weight(0.02f));
                 break;
             default:
                 if (IsYoshiValley()) {
-                    move_f32_towards(&D_80164A90[index], 50, 0.04f);
-                    move_f32_towards(&D_80164AA0[index], 35, 0.04f);
+                    move_f32_towards(&D_80164A90[index], 50, (f32) native_camera_weight(0.04f));
+                    move_f32_towards(&D_80164AA0[index], 35, (f32) native_camera_weight(0.04f));
                 } else {
-                    move_f32_towards(&D_80164A90[index], 40, 0.02f);
-                    move_f32_towards(&D_80164AA0[index], 20, 0.02f);
+                    move_f32_towards(&D_80164A90[index], 40, (f32) native_camera_weight(0.02f));
+                    move_f32_towards(&D_80164AA0[index], 20, (f32) native_camera_weight(0.02f));
                 }
                 break;
         }
     } else {
-        move_f32_towards(&D_80164A90[index], 0, 0.04f);
-        move_f32_towards(&D_80164AA0[index], 0, 0.04f);
+        move_f32_towards(&D_80164A90[index], 0, (f32) native_camera_weight(0.04f));
+        move_f32_towards(&D_80164AA0[index], 0, (f32) native_camera_weight(0.04f));
     }
     sp90[0] = camera->unk_30[0];
     sp90[1] =
@@ -518,13 +525,13 @@ void func_8001CCEC(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     z = player->pos[2] + sp84[2];
     y = player->pos[1] + sp84[1];
 
-    arg2[0] += (x - camera->lookAt[0]) * D_80164A78[index];
-    arg2[2] += ((z - camera->lookAt[2]) * D_80164A78[index]);
+    arg2[0] += (x - camera->lookAt[0]) * (f32) native_camera_weight(D_80164A78[index]);
+    arg2[2] += ((z - camera->lookAt[2]) * (f32) native_camera_weight(D_80164A78[index]));
 
     if ((((player->speed / 18) * 216) <= 5.0f) && ((player->effects & 2) == 2)) {
-        arg2[1] += ((y - camera->lookAt[1]) * 0.02);
+        arg2[1] += ((y - camera->lookAt[1]) * native_camera_weight(0.02));
     } else {
-        arg2[1] += ((y - camera->lookAt[1]) * 0.5);
+        arg2[1] += ((y - camera->lookAt[1]) * native_camera_weight(0.5));
     }
     mtxf_translate_vec3f_mat3(sp90, sp9C);
     x = player->pos[0] + sp90[0];
@@ -537,16 +544,16 @@ void func_8001CCEC(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
         y = player->unk_074 + player->boundingBoxSize + sp90[1];
     }
 
-    *arg3 = camera->pos[0] + ((x - camera->pos[0]) * D_80164A78[index]);
-    *arg5 = camera->pos[2] + ((z - camera->pos[2]) * D_80164A78[index]);
+    *arg3 = camera->pos[0] + ((x - camera->pos[0]) * (f32) native_camera_weight(D_80164A78[index]));
+    *arg5 = camera->pos[2] + ((z - camera->pos[2]) * (f32) native_camera_weight(D_80164A78[index]));
 
     if ((((player->speed / 18) * 216) <= 5.0f) && ((player->effects & 2) == 2)) {
-        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * 0.01));
+        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * native_camera_weight(0.01)));
     } else {
-        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * 0.15));
+        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * native_camera_weight(0.15)));
     }
 
-    if ((player->oobProps & UNDER_OOB_OR_FLUID_LEVEL) != 0) {
+    if ((player->oobProps & UNDER_OOB_OR_FLUID_LEVEL) != 0 && (strcmp(CM_GetProps()->DebugName, "Hazy Maze Cave") != 0 && strcmp(CM_GetProps()->DebugName, "Yoshis Riverbed") != 0)) {
         *arg4 = gPlayerWaterLevel[index];
     }
 }
@@ -565,9 +572,9 @@ void func_8001D53C(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
         camera->unk_A0 = 0.0f;
     }
     if ((u16) player->unk_222 != 4) {
-        move_f32_towards(&camera->unk_A0, 20.0f, 0.06f);
+        move_f32_towards(&camera->unk_A0, 20.0f, (f32) native_camera_weight(0.06f));
     } else {
-        move_f32_towards(&camera->unk_A0, 0.0f, 0.06f);
+        move_f32_towards(&camera->unk_A0, 0.0f, (f32) native_camera_weight(0.06f));
     }
     thing = gPlayerWaterLevel[arg7];
     sp68[0] = camera->unk_30[0];
@@ -591,6 +598,9 @@ void func_8001D53C(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     stackPadding0 = player->pos[0] + sp68[0];
     stackPadding2 = player->pos[2] + sp68[2];
     stackPadding1 = sp68[1] + (player->unk_074 + 1.5);
+    if ((strcmp(CM_GetProps()->DebugName, "Hazy Maze Cave") == 0 || strcmp(CM_GetProps()->DebugName, "Yoshis Riverbed") == 0) &&
+        (player->oobProps & UNDER_OOB_OR_FLUID_LEVEL) && !(player->lakituProps & LAKITU_RETRIEVAL))
+        stackPadding1 = sp68[1] + player->pos[1];
     if ((player->lakituProps & LAKITU_RETRIEVAL) == LAKITU_RETRIEVAL) {
         stackPadding1 = sp68[1] + (thing + 10.0f);
     }
@@ -662,7 +672,7 @@ void func_8001D944(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     var_v1 = player->unk_DB4.unk0;
     var_f2 = player->unk_DB4.unk8;
 
-    var_v1++;
+    var_v1 += gNativeSimulationLegacyTicks;
     temp_f0 = ((var_f2 * var_v1) - (0.7 * (var_v1 * var_v1)));
     if ((var_v1 != 0) && (temp_f0 < 0)) {
         var_v1 = 0;
@@ -678,7 +688,7 @@ void func_8001D944(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     player->unk_DB4.unk8 = var_f2;
     var_v0 = camera->unk_94.unk_8;
     var_f0 = camera->unk_94.unk_0;
-    var_v0++;
+    var_v0 += gNativeSimulationLegacyTicks;
     temp_f12 = (var_v0 * var_f0) - (1.25 * (var_v0 * var_v0));
     if ((var_v0 != 0) && (temp_f12 < 0)) {
         var_v0 = 0;
@@ -695,28 +705,28 @@ void func_8001D944(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     camera->unk_94.unk_8 = var_v0;
     camera->unk_94.unk_0 = var_f0;
     if (D_80164678[index] == 2) {
-        move_f32_towards(&D_80164A38[index], 20.0f, 0.1f);
-        move_f32_towards(&D_80164A48[index], 1.5f, 0.1f);
-        D_80164A78[index] += 0.1;
+        move_f32_towards(&D_80164A38[index], 20.0f, (f32) native_camera_weight(0.1f));
+        move_f32_towards(&D_80164A48[index], 1.5f, (f32) native_camera_weight(0.1f));
+        D_80164A78[index] += 0.1 * gNativeSimulationTickScale;
         if (D_80164A78[index] >= 1) {
             D_80164A78[index] = 1;
         }
 
     } else {
-        move_f32_towards(&D_80164A38[index], 0, 0.1f);
-        move_f32_towards(&D_80164A48[index], 0, 0.1f);
-        D_80164A78[index] -= 0.1;
+        move_f32_towards(&D_80164A38[index], 0, (f32) native_camera_weight(0.1f));
+        move_f32_towards(&D_80164A48[index], 0, (f32) native_camera_weight(0.1f));
+        D_80164A78[index] -= 0.1 * gNativeSimulationTickScale;
         if (D_800DDB30[gActiveScreenMode] >= D_80164A78[index]) {
             D_80164A78[index] = D_800DDB30[gActiveScreenMode];
         }
     }
     if ((player->lakituProps & WENT_OVER_OOB) == WENT_OVER_OOB) {
 
-        move_f32_towards(&D_80164A90[index], 15, 0.02f);
-        move_f32_towards(&D_80164AA0[index], 20, 0.02f);
+        move_f32_towards(&D_80164A90[index], 15, (f32) native_camera_weight(0.02f));
+        move_f32_towards(&D_80164AA0[index], 20, (f32) native_camera_weight(0.02f));
     } else {
-        move_f32_towards(&D_80164A90[index], 0, 0.02f);
-        move_f32_towards(&D_80164AA0[index], 0, 0.02f);
+        move_f32_towards(&D_80164A90[index], 0, (f32) native_camera_weight(0.02f));
+        move_f32_towards(&D_80164AA0[index], 0, (f32) native_camera_weight(0.02f));
     }
     sp90[0] = camera->unk_30[0];
     sp90[1] =
@@ -738,13 +748,13 @@ void func_8001D944(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
     z = player->pos[2] + sp84[2];
     y = player->pos[1] + sp84[1];
 
-    arg2[0] += (x - camera->lookAt[0]) * D_80164A78[index];
-    arg2[2] += ((z - camera->lookAt[2]) * D_80164A78[index]);
+    arg2[0] += (x - camera->lookAt[0]) * (f32) native_camera_weight(D_80164A78[index]);
+    arg2[2] += ((z - camera->lookAt[2]) * (f32) native_camera_weight(D_80164A78[index]));
 
     if ((((player->speed / 18) * 216) <= 5.0f) && ((player->effects & 2) == 2)) {
-        arg2[1] += ((y - camera->lookAt[1]) * 0.02);
+        arg2[1] += ((y - camera->lookAt[1]) * native_camera_weight(0.02));
     } else {
-        arg2[1] += ((y - camera->lookAt[1]) * 0.5);
+        arg2[1] += ((y - camera->lookAt[1]) * native_camera_weight(0.5));
     }
     mtxf_translate_vec3f_mat3(sp90, sp9C);
     x = player->pos[0] + sp90[0];
@@ -757,16 +767,16 @@ void func_8001D944(Player* player, Camera* camera, Vec3f arg2, f32* arg3, f32* a
         y = player->unk_074 + player->boundingBoxSize + sp90[1];
     }
 
-    *arg3 = camera->pos[0] + ((x - camera->pos[0]) * D_80164A78[index]);
-    *arg5 = camera->pos[2] + ((z - camera->pos[2]) * D_80164A78[index]);
+    *arg3 = camera->pos[0] + ((x - camera->pos[0]) * (f32) native_camera_weight(D_80164A78[index]));
+    *arg5 = camera->pos[2] + ((z - camera->pos[2]) * (f32) native_camera_weight(D_80164A78[index]));
 
     if ((((player->speed / 18) * 216) <= 5.0f) && ((player->effects & 2) == 2)) {
-        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * 0.01));
+        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * native_camera_weight(0.01)));
     } else {
-        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * 0.15));
+        *arg4 = camera->pos[1] + (((y - camera->pos[1]) * native_camera_weight(0.15)));
     }
 
-    if ((player->oobProps & UNDER_OOB_OR_FLUID_LEVEL) != 0) {
+    if ((player->oobProps & UNDER_OOB_OR_FLUID_LEVEL) != 0 && (strcmp(CM_GetProps()->DebugName, "Hazy Maze Cave") != 0 && strcmp(CM_GetProps()->DebugName, "Yoshis Riverbed") != 0)) {
         *arg4 = gPlayerWaterLevel[index];
     }
 }
@@ -939,6 +949,13 @@ void func_8001E8E8(Camera* camera, Player* player, s8 arg2) {
     camera->unk_B0 = 0;
     camera->unk_2C = player->rotation[1];
     func_8001D53C(player, camera, sp5C, &sp7C, &sp78, &sp74, (s16) (s32) player->rotation[1], (s16) (s32) arg2);
+    if (CM_GetProps()->RescueOnWaterContact) {
+        // Follow the kart through the lift and the move back to the track.
+        const f32 rescueHeight = (player->lakituProps & LAKITU_RETRIEVAL)
+                                     ? fmaxf(player->pos[1], gPlayerWaterLevel[arg2])
+                                     : player->pos[1];
+        sp78 = rescueHeight + camera->unk_30[1] + 10.0f;
+    }
     check_bounding_collision(&camera->collision, 5.0f, sp7C, sp78, sp74);
     camera->lookAt[0] = sp5C[0];
     camera->lookAt[1] = sp5C[1];

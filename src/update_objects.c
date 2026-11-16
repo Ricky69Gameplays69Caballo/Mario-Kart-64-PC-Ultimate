@@ -2396,11 +2396,12 @@ s16 func_8007AFB0(s32 objectIndex, s32 playerId) {
         play_sound2(SOUND_MENU_FILE_NOT_FOUND);
     }
 
-    if (playerHUD[playerId].itemOverride != 0) {
+    if (playerHUD[playerId].itemOverride != 0 && !CVarGetInteger("gCheats.ItemFilterEnabled", 0)) {
         randomItem = (s16) playerHUD[playerId].itemOverride;
         playerHUD[playerId].itemOverride = 0;
     }
 
+    if (CVarGetInteger("gCheats.ItemFilterEnabled", 0)) playerHUD[playerId].itemOverride = 0;
     func_800729B4(objectIndex, (s32) randomItem);
 
     return randomItem;
@@ -2562,8 +2563,8 @@ void func_8007B34C(s32 playerId) {
             object->unk_04C = 8;
             object->unk_0D6 = 2;
             object_next_state(temp_s0);
-            func_800C9018((u8) playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFE, 0x1C));
-            func_800C8F80((u8) playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFE, 0x47));
+            func_800C9018(playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFE, 0x1C));
+            func_800C8F80(playerId, SOUND_ARG_LOAD(0x01, 0x00, 0xFE, 0x47));
             break;
         case 7:
             func_80072D3C(temp_s0, (s32) object->unk_0A2, 0, 8, 0x0000000A);
@@ -2671,8 +2672,13 @@ void func_8007B34C(s32 playerId) {
                                 } else {
                                     func_800726CC(temp_s0, 9);
                                 }
-                            } else if ((object->unk_0A2 == 0x000D) || (object->unk_0A2 == 0x000E)) {
-                                object->unk_0A2--;
+                            } else if ((object->unk_0A2 == 0x000D) || (object->unk_0A2 == 0x000E) ||
+                                       ((object->unk_0A2 == ITEM_MUSHROOM) && (gModeSelection == TIME_TRIALS) &&
+                                        CVarGetInteger(CVAR_TT_INFINITE_MUSHROOMS, 0))) {
+                                // PC option: the last Time Trial mushroom never runs out
+                                if (object->unk_0A2 != ITEM_MUSHROOM) {
+                                    object->unk_0A2--;
+                                }
                                 set_type_object(temp_s0, (s32) object->unk_0A2);
                                 object->unk_0D6 = 3;
                                 func_800726CC(temp_s0, 0x00000028);

@@ -26,6 +26,18 @@ s32 gPlayerStarEffectStartTime[NUM_RACERS];
 s32 gPlayerBooEffectStartTime[NUM_RACERS];
 s32 gPlayerOtherScreensAlpha[NUM_RACERS];
 s32 D_8018D990[NUM_RACERS];
+static u16 sAppleSquishTicks[NUM_RACERS];
+
+// Event-level diagnostics for large races, including racers beyond the snapshot limit.
+static void LogBotDamageEvent(const char* kind, Player* player, s16 playerId) {
+    if (!CVarGetInteger("gDiagnostics.DetailedCrashLogging", 0) ||
+        playerId < 0 || playerId >= NUM_RACERS || (player->type & PLAYER_HUMAN)) return;
+    LUSLOG_INFO("Bot damage event: kind=%s racer=%d tick=%zu pos=(%.2f,%.2f,%.2f) velocity=(%.2f,%.2f,%.2f) hop=%.2f speed=%.2f effects=%08x triggers=%08x surface=%d",
+                kind, playerId + 1, gTickCounter, player->pos[0], player->pos[1], player->pos[2],
+                player->velocity[0], player->velocity[1], player->velocity[2], player->kartHopVelocity,
+                player->speed, (unsigned) player->effects, (unsigned) player->triggers, player->surfaceType);
+}
+
 
 UNUSED void func_unnamed(void) {
 }
@@ -144,7 +156,7 @@ void func_8008C310(Player* player) {
 UNUSED void func_unnamed34(void) {
 }
 
-void clean_effect(Player* player, s8 arg1) {
+void clean_effect(Player* player, s16 arg1) {
 
     if ((player->effects & 0x400) == 0x400) {
         func_8008C6D0(player, arg1);
@@ -193,7 +205,7 @@ void clean_effect(Player* player, s8 arg1) {
     player->effects = (s32) (player->effects & ~0x20);
 }
 
-void func_8008C528(Player* player, s8 arg1) {
+void func_8008C528(Player* player, s16 arg1) {
     UNUSED s32 sp24;
     s32 temp_v1;
     clean_effect(player, arg1);
@@ -220,7 +232,7 @@ void func_8008C528(Player* player, s8 arg1) {
     player->triggers = (s32) (player->triggers & ~LOW_TUMBLE_TRIGGER);
 }
 
-void func_8008C62C(Player* player, s8 arg1) {
+void func_8008C62C(Player* player, s16 arg1) {
 
     player_decelerate_alternative(player, 5.0f);
     player->unk_0A8 += (s16) 0xA0;
@@ -238,7 +250,7 @@ void func_8008C62C(Player* player, s8 arg1) {
     }
 }
 
-void func_8008C6D0(Player* player, s8 arg1) {
+void func_8008C6D0(Player* player, s16 arg1) {
 
     player->unk_206 = 0;
     player->slopeAccel = 0;
@@ -256,7 +268,7 @@ void func_8008C6D0(Player* player, s8 arg1) {
     player->unk_042 = 0;
 }
 
-void func_8008C73C(Player* player, s8 playerIndex) {
+void func_8008C73C(Player* player, s16 playerIndex) {
     clean_effect(player, playerIndex);
     if (((player->effects & 0x80) != 0x80) && ((player->effects & 0x40) != 0x40)) {
         player->effects &= ~0x10;
@@ -291,7 +303,7 @@ void func_8008C73C(Player* player, s8 playerIndex) {
     }
 }
 
-void func_8008C8C4(Player* player, s8 playerId) {
+void func_8008C8C4(Player* player, s16 playerId) {
     player->effects &= ~0x80;
     player->effects &= ~0x40;
     player->unk_0A8 = 0;
@@ -316,7 +328,7 @@ void func_8008C8C4(Player* player, s8 playerId) {
     }
 }
 
-void func_8008C9EC(Player* player, s8 arg1) {
+void func_8008C9EC(Player* player, s16 arg1) {
     s16 stackPadding1;
     s16 stackPadding2;
     s16 sp30[5] = { 1092, 1092, 2184, 1638, 1820 };
@@ -370,7 +382,7 @@ void func_8008C9EC(Player* player, s8 arg1) {
     }
 }
 
-void func_8008CDC0(Player* player, s8 arg1) {
+void func_8008CDC0(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->triggers &= ~HIT_BANANA_TRIGGER;
@@ -388,7 +400,7 @@ void func_8008CDC0(Player* player, s8 arg1) {
     }
 }
 
-void func_8008CEB0(Player* player, s8 arg1) {
+void func_8008CEB0(Player* player, s16 arg1) {
     f32 var_f0;
     s16 var_v1;
     s16 var_a3;
@@ -438,11 +450,11 @@ void func_8008CEB0(Player* player, s8 arg1) {
     }
 }
 
-void func_8008D0E4(Player* player, UNUSED s8 arg1) {
+void func_8008D0E4(Player* player, UNUSED s16 arg1) {
     player->effects &= ~0x800;
 }
 
-void func_8008D0FC(Player* player, s8 arg1) {
+void func_8008D0FC(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->triggers &= ~DRIVING_SPINOUT_TRIGGER;
@@ -453,7 +465,7 @@ void func_8008D0FC(Player* player, s8 arg1) {
     player->kartProps |= DRIVING_SPINOUT;
 }
 
-void func_8008D170(Player* player, s8 arg1) {
+void func_8008D170(Player* player, s16 arg1) {
     f32 var_f0;
     s16 var_v1;
     s16 var_a3;
@@ -503,11 +515,11 @@ void func_8008D170(Player* player, s8 arg1) {
     }
 }
 
-void func_8008D3B0(Player* player, UNUSED s8 arg1) {
+void func_8008D3B0(Player* player, UNUSED s16 arg1) {
     player->kartProps &= ~DRIVING_SPINOUT;
 }
 
-void trigger_shroom(Player* player, s8 arg1) {
+void trigger_shroom(Player* player, s16 arg1) {
 
     clean_effect(player, arg1);
 
@@ -529,6 +541,27 @@ void trigger_shroom(Player* player, s8 arg1) {
         }
     }
 
+    // Human boost audio is already played above. Give nearby CPU racers
+    // the same effect through the shared positional sound pool.
+    static size_t lastBotBoostSoundTick = 0;
+    static bool botBoostSoundPlayed = false;
+    if (gTickCounter < lastBotBoostSoundTick) botBoostSoundPlayed = false;
+    if ((player->type & PLAYER_CPU) && !(player->type & PLAYER_HUMAN) && !gDemoMode &&
+        (!botBoostSoundPlayed || gTickCounter - lastBotBoostSoundTick >= 60)) {
+        for (s32 view = 0; view < LocalMP_Count(); ++view) {
+            const Camera* camera = gScreenContexts[view].camera;
+            if (!camera) continue;
+            const f32 dx = player->pos[0] - camera->pos[0];
+            const f32 dy = player->pos[1] - camera->pos[1];
+            const f32 dz = player->pos[2] - camera->pos[2];
+            if (dx * dx + dy * dy + dz * dz < 600.0f * 600.0f) {
+                func_800C9D80(player->pos, player->velocity, 0x1900A40B);
+                lastBotBoostSoundTick = gTickCounter;
+                botBoostSoundPlayed = true;
+                break;
+            }
+        }
+    }
     player->boostTimer = 0x50;
 }
 
@@ -554,7 +587,7 @@ void remove_boost_effect(Player* player) {
     player->boostPower = 0.0f;
 }
 
-void func_8008D570(Player* player, s8 arg1) {
+void func_8008D570(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->unk_0AE = player->rotation[1];
@@ -581,7 +614,7 @@ void func_8008D570(Player* player, s8 arg1) {
     }
 }
 
-void func_8008D698(Player* player, s8 arg1) {
+void func_8008D698(Player* player, s16 arg1) {
     s16 temp;
 
     if (player->unk_0B2 == 0) {
@@ -613,7 +646,7 @@ void func_8008D760(Player* player) {
     player->type &= ~PLAYER_UNKNOWN_0x80;
 }
 
-void func_8008D7B0(Player* player, s8 arg1) {
+void func_8008D7B0(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->unk_0AE = player->rotation[1];
@@ -635,7 +668,7 @@ void func_8008D7B0(Player* player, s8 arg1) {
     }
 }
 
-void func_8008D8B4(Player* player, s8 arg1) {
+void func_8008D8B4(Player* player, s16 arg1) {
     s16 temp;
 
     if (player->unk_0B2 == 0) {
@@ -688,10 +721,12 @@ void func_8008D9C0(Player* player) {
     }
 }
 
-void trigger_squish(Player* player, s8 arg1) {
+void trigger_squish(Player* player, s16 arg1) {
+    LogBotDamageEvent("squish", player, arg1);
     clean_effect(player, arg1);
 
     if ((player->effects & HIT_EFFECT) == 0) {
+        sAppleSquishTicks[arg1] = 0;
         player->unk_DB4.unk2 = 0;
         player->unk_238 = 0;
         player->unk_DB4.unk10 = 4.5f;
@@ -720,7 +755,13 @@ void trigger_squish(Player* player, s8 arg1) {
     }
 }
 
-void apply_hit_effect(Player* player, s8 arg1) {
+void trigger_apple_squish(Player* player, s16 playerId) {
+    trigger_squish(player, playerId);
+    sAppleSquishTicks[playerId] = 3 * 60;
+}
+
+void apply_hit_effect(Player* player, s16 arg1) {
+    LogBotDamageEvent("hit", player, arg1);
     player->unk_0C2 = 0;
     player->unk_0A8 = 0;
     player->unk_07C = 0;
@@ -731,6 +772,9 @@ void apply_hit_effect(Player* player, s8 arg1) {
     if ((player->collision.surfaceDistance[2] >= 600.0f) || ((player->effects & 0x1000) != 0)) { D_8018D990[arg1] = 3; } // placed block on same line to match
     // clang-format on
 
+    if (sAppleSquishTicks[arg1] > 0 && --sAppleSquishTicks[arg1] == 0) {
+        D_8018D990[arg1] = 3;
+    }
     switch (D_8018D990[arg1]) {
         case 0:
             player->unk_DB4.unk10 = 4.5f;
@@ -810,6 +854,7 @@ void apply_hit_effect(Player* player, s8 arg1) {
             func_8008D9C0(player);
             break;
         case 3:
+            sAppleSquishTicks[arg1] = 0;
             player->unk_DB4.unk10 = 3.0f;
             player->effects &= ~HIT_EFFECT;
             player->unk_DB4.unk2 = 0;
@@ -828,7 +873,7 @@ void apply_hit_effect(Player* player, s8 arg1) {
     }
 }
 
-void trigger_lightning_strike(Player* player, s8 arg1) {
+void trigger_lightning_strike(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->triggers &= ~LIGHTNING_STRIKE_TRIGGER;
@@ -862,9 +907,11 @@ void trigger_lightning_strike(Player* player, s8 arg1) {
     }
 }
 
-void apply_lightning_effect(Player* player, s8 arg1) {
+void apply_lightning_effect(Player* player, s16 arg1) {
     s16 test;
-    if (((player->effects & 0x8000) == 0x8000) && ((player->effects & HIT_EFFECT) != HIT_EFFECT)) {
+    // A bump in a crowded race can squish a small kart after it has shrunk.
+    if ((player->effects & 0x8000) && !(player->effects & HIT_EFFECT) &&
+        (LocalMP_RacerCount() <= 16 || player->size < 1.0f)) {
         player->effects &= ~0x20000;
         player->unk_0A8 = 0;
         player->unk_07C = 0;
@@ -914,7 +961,7 @@ void apply_lightning_effect(Player* player, s8 arg1) {
     }
 }
 
-void remove_lightning_effect(Player* player, UNUSED s8 arg1) {
+void remove_lightning_effect(Player* player, UNUSED s16 arg1) {
     move_f32_towards(&player->size, 1.0f, 0.1f);
     move_f32_towards(&player->boundingBoxSize, gKartBoundingBoxSizeTable[player->characterId], 0.1f);
 
@@ -932,7 +979,7 @@ void remove_lightning_effect(Player* player, UNUSED s8 arg1) {
     player->effects &= ~0x20000;
 }
 
-void func_8008E4A4(Player* player, s8 arg1) {
+void func_8008E4A4(Player* player, s16 arg1) {
     player->unk_206 = 0;
     player->slopeAccel = 0;
     player->unk_0C0 = 0;
@@ -993,7 +1040,8 @@ void func_8008E4A4(Player* player, s8 arg1) {
     }
 }
 
-void trigger_vertical_tumble(Player* player, s8 arg1) {
+void trigger_vertical_tumble(Player* player, s16 arg1) {
+    LogBotDamageEvent("vertical_tumble", player, arg1);
     clean_effect(player, arg1);
     func_8008C310(player);
 
@@ -1034,7 +1082,7 @@ void trigger_vertical_tumble(Player* player, s8 arg1) {
     gFrameSinceLastACombo[arg1] = 0;
 }
 
-void func_8008E884(Player* player, s8 arg1) {
+void func_8008E884(Player* player, s16 arg1) {
     player->effects &= ~0x01000000;
     player->unk_0A8 = 0;
     player->unk_236 = 0;
@@ -1045,7 +1093,8 @@ void func_8008E884(Player* player, s8 arg1) {
     player->unk_042 = 0;
 }
 
-void apply_hit_by_item_effect(Player* player, s8 arg1) {
+void apply_hit_by_item_effect(Player* player, s16 arg1) {
+    LogBotDamageEvent("item_hit", player, arg1);
     player->unk_206 = 0;
     player->slopeAccel = 0;
     player->unk_0C0 = 0;
@@ -1102,7 +1151,8 @@ void apply_hit_by_item_effect(Player* player, s8 arg1) {
     }
 }
 
-void trigger_high_tumble(Player* player, s8 arg1) {
+void trigger_high_tumble(Player* player, s16 arg1) {
+    LogBotDamageEvent("high_tumble", player, arg1);
     clean_effect(player, arg1);
     func_8008C310(player);
 
@@ -1135,7 +1185,7 @@ void trigger_high_tumble(Player* player, s8 arg1) {
     gFrameSinceLastACombo[arg1] = 0;
 }
 
-void remove_hit_by_item_effect(Player* player, s8 arg1) {
+void remove_hit_by_item_effect(Player* player, s16 arg1) {
     player->effects &= ~HIT_BY_ITEM_EFFECT;
     player->unk_0A8 = 0;
     player->unk_236 = 0;
@@ -1146,7 +1196,7 @@ void remove_hit_by_item_effect(Player* player, s8 arg1) {
     player->unk_042 = 0;
 }
 
-void trigger_asphalt_ramp_boost(Player* player, s8 playerId) {
+void trigger_asphalt_ramp_boost(Player* player, s16 playerId) {
     clean_effect(player, playerId);
 
     player->effects |= BOOST_RAMP_ASPHALT_EFFECT;
@@ -1194,7 +1244,7 @@ void remove_boost_ramp_asphalt_effect(Player* player) {
     player->boostPower = 0.0f;
 }
 
-void trigger_wood_ramp_boost(Player* player, s8 playerId) {
+void trigger_wood_ramp_boost(Player* player, s16 playerId) {
     clean_effect(player, playerId);
 
     player->effects |= BOOST_RAMP_WOOD_EFFECT;
@@ -1236,7 +1286,7 @@ void remove_boost_ramp_wood_effect(Player* player) {
     player->boostPower = 0.0f;
 }
 
-void func_8008F104(Player* player, s8 arg1) {
+void func_8008F104(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->unk_0AE = player->rotation[1];
@@ -1253,7 +1303,7 @@ void func_8008F104(Player* player, s8 arg1) {
     }
 }
 
-void func_8008F1B8(Player* player, s8 arg1) {
+void func_8008F1B8(Player* player, s16 arg1) {
     s16 temp;
 
     player->kartPropulsionStrength = (player->unk_210 * 0.05);
@@ -1306,7 +1356,7 @@ void func_8008F3E0(Player* player) {
     player->effects &= ~0x4000;
 }
 
-void func_8008F3F4(Player* player, UNUSED s8 arg1) {
+void func_8008F3F4(Player* player, UNUSED s16 arg1) {
     player->unk_0A8 += 0x80;
     player->unk_042 += 0x71C;
     player->unk_07C = 0;
@@ -1323,7 +1373,7 @@ void func_8008F3F4(Player* player, UNUSED s8 arg1) {
     }
 }
 
-void func_8008F494(Player* player, s8 arg1) {
+void func_8008F494(Player* player, s16 arg1) {
     if ((((player->effects & 0x80) != 0) || ((player->effects & 0x40) != 0) || ((player->effects & 0x01000000)) ||
          ((player->effects & HIT_BY_ITEM_EFFECT)) || ((player->effects & 0x400) != 0)) &&
         (gModeSelection == BATTLE)) {
@@ -1345,7 +1395,7 @@ void func_8008F494(Player* player, s8 arg1) {
     }
 }
 
-void func_8008F5A4(Player* player, s8 arg1) {
+void func_8008F5A4(Player* player, s16 arg1) {
 
     if ((player->kartProps & UNKNOWN_BATTLE_VAR) != 0) {
         pop_player_balloon(player, arg1);
@@ -1371,7 +1421,12 @@ void func_8008F5A4(Player* player, s8 arg1) {
 
 #include "port/audio/HMAS.h"
 
-void apply_star_effect(Player* player, s8 arg1) {
+void apply_star_effect(Player* player, s16 arg1) {
+    // Extra racers may activate their star outside hearing range. Recheck
+    // periodically so its positional sound begins when they come nearby.
+    if (arg1 >= MAX_HUMAN_PLAYERS && ((gTickCounter + arg1) & 7) == 0 &&
+        ((s32) gCourseTimer - gPlayerStarEffectStartTime[arg1]) < 9)
+        func_800CA984(arg1);
     if (((s32) gCourseTimer - gPlayerStarEffectStartTime[arg1]) >= 9) {
         D_8018D900[arg1] = 1;
 
@@ -1382,7 +1437,7 @@ void apply_star_effect(Player* player, s8 arg1) {
                 D_8018D900[arg1] = 0;
             }
         } else if (D_8018D900[arg1] == 1) {
-            func_800CAACC((u8) arg1);
+            func_800CAACC(arg1);
             D_8018D900[arg1] = 0;
         }
     }
@@ -1396,7 +1451,7 @@ void apply_star_effect(Player* player, s8 arg1) {
 }
 
 // Star item
-void trigger_star(Player* player, s8 arg1) {
+void trigger_star(Player* player, s16 arg1) {
     clean_effect(player, arg1);
 
     player->effects |= STAR_EFFECT;
@@ -1420,7 +1475,7 @@ void trigger_star(Player* player, s8 arg1) {
     }
 }
 
-void func_8008F86C(Player* player, s8 arg1) {
+void func_8008F86C(Player* player, s16 arg1) {
     player->effects &= ~STAR_EFFECT;
     if (((player->type & PLAYER_HUMAN) == PLAYER_HUMAN) &&
         ((player->type & PLAYER_INVISIBLE_OR_BOMB) != PLAYER_INVISIBLE_OR_BOMB)) {
@@ -1430,7 +1485,7 @@ void func_8008F86C(Player* player, s8 arg1) {
     func_800CAACC(arg1);
 }
 
-void apply_boo_effect(Player* player, s8 playerIndex) {
+void apply_boo_effect(Player* player, s16 playerIndex) {
     s32 time_elapsed;
     time_elapsed = ((s32) gCourseTimer) - gPlayerBooEffectStartTime[playerIndex];
     if (time_elapsed < BOO_EFFECT_DURATION) {
@@ -1468,7 +1523,7 @@ void apply_boo_effect(Player* player, s8 playerIndex) {
     }
 }
 
-void trigger_boo(Player* player, s8 playerIndex) {
+void trigger_boo(Player* player, s16 playerIndex) {
     s16 temp_v1;
     // become boo
     if ((player->type & PLAYER_HUMAN) != 0) {
@@ -1493,7 +1548,7 @@ void trigger_boo(Player* player, s8 playerIndex) {
     }
 }
 
-void func_8008FB30(Player* player, s8 playerIndex) {
+void func_8008FB30(Player* player, s16 playerIndex) {
     player->alpha += ALPHA_CHANGE_LARGE;
     if (player->alpha > ALPHA_MAX - (ALPHA_CHANGE_LARGE * 2)) {
         player->alpha = ALPHA_MAX;
@@ -1526,7 +1581,7 @@ void func_8008FC1C(Player* player) {
     }
 }
 
-void func_8008FC64(Player* player, s8 playerIndex) {
+void func_8008FC64(Player* player, s16 playerIndex) {
     player->alpha -= ALPHA_CHANGE_MEDIUM;
     if (player->alpha <= ALPHA_CHANGE_MEDIUM) {
         player->alpha = ALPHA_MIN;
@@ -1538,7 +1593,7 @@ void func_8008FC64(Player* player, s8 playerIndex) {
     }
 }
 
-void func_8008FCDC(Player* player, s8 arg1) {
+void func_8008FCDC(Player* player, s16 arg1) {
     player->alpha += ALPHA_CHANGE_SMALL;
     if (player->alpha > ALPHA_MAX - (ALPHA_CHANGE_LARGE * 2)) {
         player->alpha = ALPHA_MAX;
@@ -1547,7 +1602,7 @@ void func_8008FCDC(Player* player, s8 arg1) {
     func_80056A40(arg1, (u32) player->alpha);
 }
 
-void func_8008FD4C(Player* player, UNUSED s8 arg1) {
+void func_8008FD4C(Player* player, UNUSED s16 arg1) {
     s16 temp_v0;
 
     player->triggers |= LOSE_BATTLE_EFFECT;
@@ -1560,7 +1615,7 @@ void func_8008FD4C(Player* player, UNUSED s8 arg1) {
     }
 }
 
-void func_8008FDA8(Player* player, UNUSED s8 arg1) {
+void func_8008FDA8(Player* player, UNUSED s16 arg1) {
     s16 temp_v0;
     player->kartProps |= BECOME_INVISIBLE;
     for (temp_v0 = 0; temp_v0 < 10; ++temp_v0) {
@@ -1570,7 +1625,7 @@ void func_8008FDA8(Player* player, UNUSED s8 arg1) {
     }
 }
 
-void func_8008FDF4(Player* player, UNUSED s8 arg1) {
+void func_8008FDF4(Player* player, UNUSED s16 arg1) {
     clean_effect(player, arg1);
 
     player->effects &= ~0x10;
@@ -1581,7 +1636,7 @@ void func_8008FDF4(Player* player, UNUSED s8 arg1) {
     player->effects |= UNKNOWN_EFFECT_0x10000000;
 }
 
-void func_8008FE84(Player* player, UNUSED s8 arg1) {
+void func_8008FE84(Player* player, UNUSED s16 arg1) {
     player->effects &= ~0x10;
     if ((player->effects & 8) != 8) {
         player->effects &= ~UNKNOWN_EFFECT_0x10000000;
@@ -1590,22 +1645,22 @@ void func_8008FE84(Player* player, UNUSED s8 arg1) {
     }
 }
 
-void func_8008FEDC(Player* player, UNUSED s8 arg1) {
+void func_8008FEDC(Player* player, UNUSED s16 arg1) {
     player->effects &= ~UNKNOWN_EFFECT_0x10000000;
     player->kartHopJerk = 0.0f;
     player->kartHopVelocity = 0.0f;
     player->kartHopAcceleration = 0.0f;
 }
 
-void CM_Waypoints(Player*, s8);
+void CM_Waypoints(Player*, s16);
 
-void func_8008FF08(Player* player, s8 playerId) {
+void func_8008FF08(Player* player, s16 playerId) {
     UNUSED s16 waypoint;
 
     CM_Waypoints(player, playerId);
 }
 
-void func_80090178(Player* player, s8 playerId, Vec3f arg2, Vec3f arg3) {
+void func_80090178(Player* player, s16 playerId, Vec3f arg2, Vec3f arg3) {
     u16 test;
     TrackPathPoint* temp_v1;
     f32 spF8[4] = { 0.0f, 0.0f, -700.0f, 700.0f };
@@ -1751,7 +1806,7 @@ void func_80090868(Player* player) {
     }
 }
 
-void func_80090970(Player* player, s8 playerId, s8 arg2) {
+void func_80090970(Player* player, s16 playerId, s8 arg2) {
     UNUSED s32 stackPadding0;
     UNUSED s32 stackPadding1;
     Vec3f sp44;
@@ -1938,7 +1993,7 @@ bool prevent_item_use(Player* player) {
 }
 
 //UNUSED
-void func_800911B4(Player* player, s8 arg1) {
+void func_800911B4(Player* player, s16 arg1) {
     s32 temp_v0;
 
     player->unk_0AE = player->rotation[1];
@@ -1982,7 +2037,7 @@ void func_800911B4(Player* player, s8 arg1) {
 }
 
 // unused
-void func_80091298(Player* player, s8 arg1) {
+void func_80091298(Player* player, s16 arg1) {
     s16 var_v1;
     UNUSED s32 stackPadding1;
     Vec3f spC = { 27.167f, 25.167f, 23.167f };

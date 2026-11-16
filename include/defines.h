@@ -138,7 +138,11 @@ enum PlayerId {
 
 #define NUM_PLAYERS 8 // Original race balance and character roster.
 #define MAX_HUMAN_PLAYERS 16 // Controller ports, cameras and per-human state.
-#define NUM_RACERS 16 // Maximum race grid; slots beyond the humans are CPU racers.
+#define STANDARD_EXPANDED_RACERS 16
+#define MAX_RACE_GRID 4096
+#define MAX_EXTRA_BOTS (MAX_RACE_GRID - 1)
+// Leave a spare test slot and round up for paired kart textures.
+#define NUM_RACERS ((MAX_RACE_GRID + 2) & ~1)
 
 #define MARIO_SIZE 0.75f
 #define LUIGI_SIZE 0.75f

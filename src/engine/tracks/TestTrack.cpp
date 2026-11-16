@@ -224,7 +224,7 @@ void TestTrack::BeginPlay() {
 //    OGrandPrixBalloons::Spawn(FVector(0, 0, 0));
 }
 
-void TestTrack::WhatDoesThisDo(Player* player, int8_t playerId) {
+void TestTrack::WhatDoesThisDo(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x19B) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1B9)) {
         if (D_80165300[playerId] != 1) {
@@ -239,7 +239,7 @@ void TestTrack::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void TestTrack::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void TestTrack::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x19B) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x1B9)) {
         if (D_80165300[playerId] != 1) {

@@ -211,7 +211,7 @@ void DKJungle::SomeSounds() {
     func_800C9D80(D_8015F738, D_802B91C8, 0x51028001);
 }
 
-void DKJungle::WhatDoesThisDo(Player* player, int8_t playerId) {
+void DKJungle::WhatDoesThisDo(Player* player, int16_t playerId) {
     if ((((s16) gNearestPathPointByPlayerId[playerId] >= 0) &&
             ((s16) gNearestPathPointByPlayerId[playerId] < 0x65)) ||
         (((s16) gNearestPathPointByPlayerId[playerId] >= 0x14A) &&
@@ -241,7 +241,7 @@ void DKJungle::WhatDoesThisDo(Player* player, int8_t playerId) {
     }
 }
 
-void DKJungle::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void DKJungle::WhatDoesThisDoAI(Player* player, int16_t playerId) {
     if (((s16) gNearestPathPointByPlayerId[playerId] >= 0x288) &&
         ((s16) gNearestPathPointByPlayerId[playerId] < 0x305)) {
         if (D_80165300[playerId] != 1) {
@@ -287,7 +287,7 @@ void DKJungle::SomeCollisionThing(Player *player, Vec3f arg1, Vec3f arg2, Vec3f 
     func_8003F138(player, arg1, arg2, arg3, arg4, arg5, arg6, arg7);
 }
 
-void DKJungle::Waypoints(Player* player, int8_t playerId) {
+void DKJungle::Waypoints(Player* player, int16_t playerId) {
     s16 waypoint = gNearestPathPointByPlayerId[playerId];
     if ((waypoint >= 0xB9) && (waypoint < 0x119)) {
         player->nearestPathPointId = 0xB9U;

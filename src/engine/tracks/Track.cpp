@@ -344,11 +344,14 @@ bool IsTriangleWindingInverted() {
 }
 
 Track::Track() {
+    Props.RescueOnWaterContact = false;
+    Props.DryRescue = false;
     Props.SetText(Props.Name, "Blank Track", sizeof(Props.Name));
     Props.SetText(Props.DebugName, "blnktrck", sizeof(Props.DebugName));
     Props.SetText(Props.TrackLength, "100m", sizeof(Props.TrackLength));
     ResourceName = "mod:blank_track";
     Props.Minimap.Texture = minimap_mario_raceway;
+    Props.Minimap.RawTexture = false;
     Props.Minimap.Width = ResourceGetTexWidthByName(Props.Minimap.Texture);
     Props.Minimap.Height = ResourceGetTexHeightByName(Props.Minimap.Texture);
     Props.Minimap.Pos[0].X = 257;
@@ -489,10 +492,10 @@ void Track::SomeSounds() {
 void Track::CreditsSpawnActors() {
 }
 
-void Track::WhatDoesThisDo(Player* player, int8_t playerId) {
+void Track::WhatDoesThisDo(Player* player, int16_t playerId) {
 }
 
-void Track::WhatDoesThisDoAI(Player* player, int8_t playerId) {
+void Track::WhatDoesThisDoAI(Player* player, int16_t playerId) {
 }
 
 void Track::SetStaffGhost() {
@@ -500,7 +503,7 @@ void Track::SetStaffGhost() {
     D_80162DF4 = 1;
 }
 
-void Track::Waypoints(Player* player, int8_t playerId) {
+void Track::Waypoints(Player* player, int16_t playerId) {
     player->nearestPathPointId = gNearestPathPointByPlayerId[playerId];
     if (player->nearestPathPointId < 0) {
         player->nearestPathPointId = gPathCountByPathIndex[0] + player->nearestPathPointId;

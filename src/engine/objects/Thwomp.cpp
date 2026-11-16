@@ -652,7 +652,7 @@ void OThwomp::func_80080B28(s32 objectIndex, s32 playerId) {
                         if (player->type & PLAYER_CPU) {
                             func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0xA2, 0x4A));
                         } else {
-                            func_800C9060((u8) playerId, SOUND_ARG_LOAD(0x19, 0x01, 0xA2, 0x4A));
+                            func_800C9060(playerId, SOUND_ARG_LOAD(0x19, 0x01, 0xA2, 0x4A));
                         }
                         OThwomp::func_80080DE4(objectIndex);
                         func_80075304(gObjectList[objectIndex].pos, 3, 3, D_8018D3C4);

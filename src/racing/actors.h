@@ -75,6 +75,7 @@ void update_actor_falling_rocks(struct FallingRock*);
 void spawn_foliage(struct ActorSpawnData*);
 void spawn_all_item_boxes(struct ActorSpawnData*);
 void spawn_item_box(Vec3f pos);
+void spawn_fixed_item_box(Vec3f pos, s16 itemId);
 void spawn_fake_item_box(Vec3f pos);
 void init_kiwano_fruit(void);
 void destroy_all_actors(void);
@@ -99,7 +100,7 @@ void evaluate_collision_for_players_and_actors(void);
 void evaluate_collision_for_destructible_actors(void);
 void func_802A1064(struct FakeItemBox*);
 void update_actor_fake_item_box(struct FakeItemBox*);
-void init_actor_hot_air_balloon_item_box(f32, f32, f32);
+struct Actor* init_actor_hot_air_balloon_item_box(f32, f32, f32);
 void update_actor_item_box_hot_air_balloon(struct ItemBox*);
 void update_actor_item_box(struct ItemBox*);
 void render_actor_fake_item_box(Camera*, struct FakeItemBox*);
@@ -119,7 +120,6 @@ const char* get_actor_resource_location_name(s32 id);
 extern void func_800C98B8(Vec3f, Vec3f, u32);
 extern void func_800C99E0(Vec3f, s32);
 
-extern struct Actor* gActorHotAirBalloonItemBox;
 extern s8 gTLUTRedShell[]; // tlut 256
 extern u16 D_802BA260;     // Box Truck sub-type?
 

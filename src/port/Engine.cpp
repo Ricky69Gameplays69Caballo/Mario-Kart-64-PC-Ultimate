@@ -1,4 +1,7 @@
+#include "Game.h"
 #include "Engine.h"
+#include "ExtraRacers.h"
+#include "LocalMultiplayer.h"
 #include "MultiplayerDisplays.h"
 
 #include <cstdlib>
@@ -59,6 +62,8 @@ float gInterpolationStep = 0.0f;
 // #include <PngFactory.h>
 #include "audio/internal.h"
 #include "audio/GameAudio.h"
+#include "main.h"
+#include "defines.h"
 }
 
 Fast::Interpreter* GetInterpreter() {
@@ -189,6 +194,7 @@ GameEngine::GameEngine() {
 
 #ifndef __SWITCH__
     Ship::Context::GetRawInstance()->GetLogger()->set_level(
+        CVarGetInteger(CVAR_DISABLE_DEBUG_LOGS, 0) ? spdlog::level::off :
         (spdlog::level::level_enum) CVarGetInteger("gDeveloperTools.LogLevel", 1));
     Ship::Context::GetRawInstance()->GetLogger()->set_pattern("[%H:%M:%S.%e] [%s:%#] [%l] %v");
 #endif
@@ -298,6 +304,12 @@ bool GameEngine::GenAssetFile() {
 }
 
 uint32_t GameEngine::GetInterpolationFPS() {
+    const auto window = Ship::Context::GetRawInstance()->GetWindow();
+    if (window->GetGui()->GetMenuOrMenubarVisible()) {
+        // Extra presentation frames update ImGui without advancing 30 Hz game logic.
+        const uint32_t refresh = window->GetCurrentRefreshRate();
+        return refresh >= 30 ? refresh : 60;
+    }
     if (Ship::Context::GetRawInstance()->GetWindow()->IsFastForward()) return 30;
     if (CVarGetInteger("gMatchRefreshRate", 0)) {
         return Ship::Context::GetRawInstance()->GetWindow()->GetCurrentRefreshRate();
@@ -360,6 +372,7 @@ void GameEngine::Create() {
     InitModsSystem();
     instance->gHMAS = new HMAS();
     instance->AudioInit();
+    ExtraRacers_LoadAudio();
     GameUI::SetupGuiElements();
 #if defined(__SWITCH__) || defined(__WIIU__)
     CVarRegisterInteger("gControlNav", 1); // always enable controller nav on switch/wii u
@@ -379,6 +392,25 @@ void GameEngine::Destroy() {
 }
 
 bool ShouldClearTextureCacheAtEndOfFrame = false;
+
+extern "C" int32_t GameEngine_GetLogicTicksPerFrame(int32_t normalTicks) {
+    if (!Ship::Context::GetRawInstance()->GetWindow()->IsFastForward()) return normalTicks;
+    return std::clamp(CVarGetInteger("gTabFastForwardTicks", 2), 1, 120);
+}
+
+extern "C" int32_t GameEngine_IsExperimentalNativeRace(void) {
+    return CVarGetInteger("gExperimentalNativeRace", 0) && gGamestate == RACING &&
+           !Ship::Context::GetRawInstance()->GetWindow()->IsFastForward();
+}
+
+extern "C" int32_t GameEngine_IsExperimentalNativePresentation(void) {
+    const bool menu = gGamestate >= START_MENU_FROM_QUIT && gGamestate <= COURSE_SELECT_MENU_FROM_QUIT;
+    return GameEngine_IsExperimentalNativeRace() ||
+           (menu && CVarGetInteger("gExperimentalNativeMenus", 0) &&
+            !Ship::Context::GetRawInstance()->GetWindow()->IsFastForward()) ||
+           (gGamestate == CREDITS_SEQUENCE && CVarGetInteger("gExperimentalNativeCredits", 0) &&
+            !Ship::Context::GetRawInstance()->GetWindow()->IsFastForward());
+}
 
 void GameEngine::StartFrame() const {
     auto window = this->context->GetWindow();
@@ -421,12 +453,12 @@ void GameEngine::RunCommands(Gfx* pool, const std::vector<std::unordered_map<Mtx
 
     auto interpreter = wnd->GetInterpreterWeak().lock().get();
 
-    // Process window events for resize, mouse, keyboard events
-    wnd->HandleEvents();
-
     interpreter->mInterpolationIndex = 0;
 
     for (const auto& mtxStack : mtx_replacements) {
+        // Pump input before every presentation, not only once per 30 Hz game
+        // iteration. ImGui needs fresh pointer events on intermediate frames.
+        wnd->HandleEvents();
         wnd->DrawAndRunGraphicsCommands(pool, mtxStack);
         interpreter->mInterpolationIndex++;
     }
@@ -448,12 +480,23 @@ void GameEngine::ProcessGfxCommands(Gfx* pool) {
     MultiplayerDisplays_Update();
     std::vector<std::unordered_map<Mtx*, MtxF>> mtx_replacements;
     int target_fps = GameEngine::Instance->GetInterpolationFPS();
-    if (CVarGetInteger("gModifyInterpolationTargetFPS", 0)) {
+    if (CVarGetInteger("gModifyInterpolationTargetFPS", 0) &&
+        !Ship::Context::GetRawInstance()->GetWindow()->GetGui()->GetMenuOrMenubarVisible()) {
         target_fps = CVarGetInteger("gInterpolationTargetFPS", 60);
     }
     static int last_fps;
     static int last_update_rate;
     static int time;
+    if (GameEngine_IsExperimentalNativePresentation()) {
+        // Development path: render the actual state once per iteration,
+        // without generated interpolation frames. Zero disables the cap.
+        auto wnd = std::dynamic_pointer_cast<Fast::Fast3dWindow>(Ship::Context::GetRawInstance()->GetWindow());
+        if (wnd) wnd->SetTargetFps(std::clamp(CVarGetInteger("gExperimentalNativeFrameCap", 0), 0, 1000));
+        RunCommands(pool, std::vector<std::unordered_map<Mtx*, MtxF>>(1));
+        time = 0;
+        last_fps = 0;
+        return;
+    }
     if (Ship::Context::GetRawInstance()->GetWindow()->IsFastForward()) {
         // One rendered frame per game iteration, with presentation waits off.
         // Increasing interpolation FPS alone would leave simulation at 30 Hz.
@@ -494,7 +537,10 @@ void GameEngine::ProcessGfxCommands(Gfx* pool) {
     auto wnd = std::dynamic_pointer_cast<Fast::Fast3dWindow>(Ship::Context::GetRawInstance()->GetWindow());
     if (wnd != nullptr) {
         wnd->SetTargetFps(GetInterpolationFPS());
-        wnd->SetMaximumFrameLatency(1);
+        const bool useDeeperQueue = wnd->GetWindowBackend() == Fast::FAST3D_DXGI_DX11 &&
+                                    LocalMP_RacerCount() >= LARGE_GRID_OPTIMIZATION_MIN_RACERS &&
+                                    CVarGetInteger(CVAR_LARGE_GRID_DX11_QUEUE, 0);
+        wnd->SetMaximumFrameLatency(useDeeperQueue ? 2 : 1);
     }
     RunCommands(pool, mtx_replacements);
 
@@ -518,7 +564,8 @@ void GameEngine::HandleAudioThread() {
         std::unique_lock<std::mutex> Lock(audio.mutex);
 
         int samples_left = AudioPlayerBuffered();
-        u32 num_audio_samples = samples_left < AudioPlayerGetDesiredBuffered() ? SAMPLES_HIGH : SAMPLES_LOW;
+        const int desiredSamples = AudioPlayerGetDesiredBuffered();
+        u32 num_audio_samples = samples_left < desiredSamples ? SAMPLES_HIGH : SAMPLES_LOW;
 
         s16 nas_buffer[SAMPLES_PER_FRAME] = { 0 };
         f32 hmas_buffer[SAMPLES_PER_FRAME] = { 0 };
@@ -538,7 +585,10 @@ void GameEngine::HandleAudioThread() {
 
         // Advance audio state with the game, but never queue unbounded audio
         // while the simulation runs faster than the physical audio device.
-        if (!Ship::Context::GetRawInstance()->GetWindow()->IsFastForward())
+        const bool fastForward = Ship::Context::GetRawInstance()->GetWindow()->IsFastForward();
+        if (gAudioDiagnosticsEnabled)
+            AudioDiagnostics_RecordBuffer(samples_left, desiredSamples, num_audio_samples * NUM_AUDIO_CHANNELS, fastForward);
+        if (!fastForward)
             AudioPlayerPlayFrame((u8*) mix_buffer, 2 * num_audio_samples * 4);
 
         audio.processing = false;

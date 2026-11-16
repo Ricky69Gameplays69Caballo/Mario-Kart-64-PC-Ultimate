@@ -15,26 +15,37 @@ extern "C" {
 #include "racing/actors.h"
 }
 
+static constexpr f32 ItemBoxDrop = 10.0f;
+
 OHotAirBalloon::OHotAirBalloon(const SpawnParams& params) : OObject(params) {
     Name = "Hot Air Balloon";
     ResourceName = "mk:hot_air_balloon";
 
     SpawnPos = params.Location.value_or(FVector{0.0f, 0.0f, 0.0f});
 
-    D_80165898 = 0;
-
-    // Spawn balloon on second lap.
     if (IsLuigiRaceway()) {
-        _visible = (bool*)&D_80165898;
-    } else { // Spawn balloon on race start
-        bool mod = true;
-        _visible = &mod;
+        D_80165898 = 0;
     }
 
     find_unused_obj_index(&_objectIndex);
-
-
     init_object(_objectIndex, 0);
+}
+
+bool OHotAirBalloon::IsVisible() const {
+    // Luigi Raceway reveals the balloon on the second lap.
+    return !IsLuigiRaceway() || D_80165898 != 0;
+}
+
+std::string OHotAirBalloon::DiagnosticState() const {
+    const Object& object = gObjectList[_objectIndex];
+    auto line = fmt::format("object={} visible={} state={} pos=({:.2f},{:.2f},{:.2f})",
+                            _objectIndex, IsVisible(), object.state, object.pos[0], object.pos[1], object.pos[2]);
+    if (mItemBox) {
+        line += fmt::format(" item_state={} item_offset=({:.2f},{:.2f},{:.2f})", mItemBox->state,
+                            mItemBox->pos[0] - object.pos[0], mItemBox->pos[1] - object.pos[1],
+                            mItemBox->pos[2] - object.pos[2]);
+    }
+    return line;
 }
 
 void OHotAirBalloon::SetSpawnParams(SpawnParams& params) {
@@ -44,15 +55,15 @@ void OHotAirBalloon::SetSpawnParams(SpawnParams& params) {
 void OHotAirBalloon::Tick() {
     s32 objectIndex = _objectIndex;
     
-    if (*_visible) {
+    if (IsVisible()) {
         if (gObjectList[objectIndex].state != 0) {
             OHotAirBalloon::func_80085768(objectIndex);
             OHotAirBalloon::func_80085534(objectIndex);
             object_calculate_new_pos_offset(objectIndex);
-            if (gObjectList[objectIndex].state >= 2) {
-                gActorHotAirBalloonItemBox->pos[0] = gObjectList[objectIndex].pos[0];
-                gActorHotAirBalloonItemBox->pos[1] = gObjectList[objectIndex].pos[1] - 10.0;
-                gActorHotAirBalloonItemBox->pos[2] = gObjectList[objectIndex].pos[2];
+            if (gObjectList[objectIndex].state >= 2 && mItemBox) {
+                mItemBox->pos[0] = gObjectList[objectIndex].pos[0];
+                mItemBox->pos[1] = gObjectList[objectIndex].pos[1] - ItemBoxDrop;
+                mItemBox->pos[2] = gObjectList[objectIndex].pos[2];
             }
         }
     }
@@ -61,7 +72,7 @@ void OHotAirBalloon::Tick() {
 void OHotAirBalloon::Draw(s32 cameraId) {
     s32 objectIndex;
     objectIndex = _objectIndex;
-    if (*_visible) {
+    if (IsVisible()) {
         if (gGamestate != CREDITS_SEQUENCE) {
             func_8008A1D0(objectIndex, cameraId, 0x000005DC, 0x00000BB8);
             if (is_obj_flag_status_active(objectIndex, VISIBLE) != 0) {
@@ -124,7 +135,9 @@ void OHotAirBalloon::init_hot_air_balloon(s32 objectIndex) {
     func_800886F4(objectIndex);
     func_80086EF0(objectIndex);
     gObjectList[objectIndex].velocity[1] = -2.0f;
-    init_actor_hot_air_balloon_item_box(0.0f, 0.0f, 0.0f);
+    const Object& object = gObjectList[objectIndex];
+    mItemBox = init_actor_hot_air_balloon_item_box(object.origin_pos[0], object.origin_pos[1] + object.offset[1] -
+                                                                          ItemBoxDrop, object.origin_pos[2]);
     object_next_state(objectIndex);
 }
 

@@ -23,6 +23,7 @@
 #include "engine/objects/Thwomp.h"
 #include "engine/objects/Snowman.h"
 #include "engine/cameras/TourCamera.h"
+#include "engine/tracks/CustomTrack.h"
 #include "port/resource/type/TrackPathPointData.h"
 
 extern "C" {
@@ -145,6 +146,7 @@ namespace TrackEditor {
         LoadActors(track, data);
         LoadStaticMeshActors(track, data);
         LoadTour(track, data);
+        LoadCustomTrackEffects(track, data, trackPath);
         SPDLOG_INFO("[SceneManager] [LoadTrackDataFromJson] SceneFile Loaded!\n");
     }
 
@@ -213,6 +215,7 @@ namespace TrackEditor {
             SPDLOG_INFO("  Minimap Loaded!");
             MK64::MinimapTexture texture = ptr->Texture;
             track->Props.Minimap.Texture = (const char*)texture.Data;
+            track->Props.Minimap.RawTexture = true;
             track->Props.Minimap.Width = texture.Width;
             track->Props.Minimap.Height = texture.Height;
         } else { // Fallback
@@ -223,6 +226,7 @@ namespace TrackEditor {
     // Sets the default minimap if none has been set
     void SetDefaultMinimap(Track* track) {
         track->Props.Minimap.Texture = minimap_mario_raceway;
+        track->Props.Minimap.RawTexture = false;
         track->Props.Minimap.Width = ResourceGetTexWidthByName(track->Props.Minimap.Texture);
         track->Props.Minimap.Height = ResourceGetTexHeightByName(track->Props.Minimap.Texture);
         SPDLOG_INFO("  No minimap found! Falling back to default minimap");
@@ -371,8 +375,18 @@ namespace TrackEditor {
                 continue;
             }
 
-            ptr[pathIndex] = obj.PathList.size();
-            track->Props.PathTable2[pathIndex] = (TrackPathPoint*) obj.PathList.data();
+            // Native path processing reads until the N64 end marker, whereas
+            // XML paths contain only waypoints. Ensure it cannot read past
+            // the imported vector and corrupt the generated race path.
+            auto& points = obj.PathList;
+            if (!points.empty() && points.back().x == -32768 && points.back().y == -32768 &&
+                points.back().z == -32768) {
+                ptr[pathIndex] = points.size() - 1;
+            } else {
+                ptr[pathIndex] = points.size();
+                points.push_back({ -32768, -32768, -32768, 0 });
+            }
+            track->Props.PathTable2[pathIndex] = points.data();
             addedPathIndexes.insert(pathIndex); // Mark this path as added
             SPDLOG_INFO("    Added path {} with {} points", pathIndex + 1, ptr[pathIndex]);
         }
@@ -438,6 +452,67 @@ namespace TrackEditor {
         
         for (const auto& actorJson : data["StaticMeshActors"]) {
             Load_AddStaticMeshActor(actorJson);
+        }
+    }
+
+    // Optional per-track effects used by imported (Amped Up) courses:
+    //   "CloudSet": stock cloud layout/image to borrow, e.g. "sherbet_land"
+    //   "ScrollMaterials": [{"Material": "material_36d0", "S": 1, "T": 1}, ...]
+    void LoadCustomTrackEffects(Track* track, nlohmann::json& data, const std::string& trackPath) {
+        CustomTrack* custom = dynamic_cast<CustomTrack*>(track);
+        if (custom == nullptr) {
+            return;
+        }
+        custom->CloudSet.clear();
+        custom->bSpawnFinishline = true;
+        custom->Rain = false;
+        custom->UnderwaterTint = false;
+        custom->LapSkyTransition = false;
+        custom->RaceScreenTextures = {};
+        custom->ScrollMaterials.clear();
+        custom->WaterVolumes.clear();
+        custom->Objects.Clear();
+        try {
+            if (data.contains("WaterVolumes")) {
+                for (const auto& entry : data.at("WaterVolumes")) {
+                    auto bounds = entry.get<std::array<float, 5>>();
+                    if (gIsMirrorMode) {
+                        const float minX = -bounds[2];
+                        bounds[2] = -bounds[1];
+                        bounds[1] = minX;
+                    }
+                    custom->WaterVolumes.push_back({bounds[0], bounds[1], bounds[2], bounds[3], bounds[4]});
+                }
+            }
+            custom->bSpawnFinishline = data.value("SpawnFinishline", true);
+            custom->Rain = data.value("Rain", false);
+            custom->UnderwaterTint = data.value("UnderwaterTint", false);
+            custom->LapSkyTransition = data.value("LapSkyTransition", false);
+            custom->RainRoofs = data.value("RainRoofs", std::vector<std::array<float, 9>>{});
+            if (data.contains("RaceScreenTextures")) {
+                auto textures = data.at("RaceScreenTextures").get<std::array<std::string, 6>>();
+                for (auto& texture : textures) {
+                    texture = "__OTR__" + trackPath + "/" + texture;
+                }
+                custom->RaceScreenTextures = std::move(textures);
+            }
+            if (data.contains("AmpedObjects")) {
+                custom->Objects.Load(data["AmpedObjects"], trackPath);
+            }
+            if (data.contains("CloudSet") && data["CloudSet"].is_string()) {
+                custom->CloudSet = data["CloudSet"].get<std::string>();
+            }
+            if (data.contains("ScrollMaterials") && data["ScrollMaterials"].is_array()) {
+                for (const auto& entry : data["ScrollMaterials"]) {
+                    CustomTrack::ScrollMaterial m;
+                    m.Name = entry.at("Material").get<std::string>();
+                    m.S = entry.value("S", (int16_t) 0);
+                    m.T = entry.value("T", (int16_t) 0);
+                    custom->ScrollMaterials.push_back(m);
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "  Error parsing track effects: " << e.what() << std::endl;
         }
     }
 

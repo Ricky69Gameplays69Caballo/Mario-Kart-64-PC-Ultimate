@@ -21,6 +21,7 @@
 #include "waypoints.h"
 #include "macros.h"
 #include "code_80005FD0.h"
+#include "engine/RaceManager.h"
 #include "update_objects.h"
 #include "effects.h"
 #include "collision.h"
@@ -36,6 +37,8 @@
 #include <assets/models/tracks/wario_stadium/wario_stadium_data.h>
 #include <assets/models/tracks/frappe_snowland/frappe_snowland_data.h>
 #include "port/Game.h"
+#include "port/Engine.h"
+#include "port/NativeFrameContact.h"
 #include "port/interpolation/FrameInterpolation.h"
 #include "engine/CoreMath.h"
 
@@ -56,7 +59,6 @@ char* texture_red_shell[] = {
     texture_red_shell_4, texture_red_shell_5, texture_red_shell_6, texture_red_shell_7,
 };
 
-struct Actor* gActorHotAirBalloonItemBox;
 s8 gTLUTRedShell[512]; // tlut 256
 u16 D_802BA260;
 
@@ -315,6 +317,7 @@ void actor_init(struct Actor* actor, Vec3f startingPos, Vec3s startingRot, Vec3f
             actor->state = 0;
             actor->boundingBoxSize = 5.5f;
             actor->model = D_0D003090;
+            ((struct ItemBox*) actor)->itemOverride = ITEM_NONE;
             break;
         case ACTOR_PIRANHA_PLANT:
             actor->flags |= 0x4000;
@@ -609,12 +612,12 @@ void evaluate_collision_player_palm_trees(Player* player) {
         if (query_and_resolve_collision_player_actor(player, pos, 5.0f, 40.0f, 0.8f) == COLLISION) {
             if ((player->effects & STAR_EFFECT) != 0) {
                 func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0x80, 0x10));
-                func_800C90F4((u8) (player - gPlayerOne),
+                func_800C90F4((player - gPlayerOne),
                               (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
                 data->someId |= 0x400;
             }
             if ((player->type & PLAYER_INVISIBLE_OR_BOMB) == 0) {
-                func_800C9060((u8) (player - gPlayerOne), SOUND_ARG_LOAD(0x19, 0x00, 0x70, 0x18));
+                func_800C9060((player - gPlayerOne), SOUND_ARG_LOAD(0x19, 0x00, 0x70, 0x18));
             }
             break;
         }
@@ -792,6 +795,24 @@ void render_actor_shell(Camera* camera, Mat4 matrix, struct ShellActor* shell) {
         return;
     }
 
+    // Course materials and the shell shadow can leave fog, blending and texture
+    // state behind. Set up the complete CI8 sprite state for every shell.
+    gDPPipeSync(gDisplayListHead++);
+    gSPClearGeometryMode(gDisplayListHead++, G_FOG | G_LIGHTING | G_CULL_FRONT | G_CULL_BACK);
+    gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER | G_SHADE);
+    gSPTexture(gDisplayListHead++, 0xFFFF, 0xFFFF, 0, G_TX_RENDERTILE, G_ON);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+    gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
+    gDPSetTextureLUT(gDisplayListHead++, G_TT_RGBA16);
+    gDPSetCombineMode(gDisplayListHead++, G_CC_DECALRGBA, G_CC_DECALRGBA);
+    gDPSetRenderMode(gDisplayListHead++, G_RM_AA_ZB_TEX_EDGE, G_RM_AA_ZB_TEX_EDGE2);
+    if (shell->type == ACTOR_GREEN_SHELL) {
+        gDPLoadTLUT_pal256(gDisplayListHead++, common_tlut_green_shell);
+    } else if (shell->type == ACTOR_RED_SHELL) {
+        gDPLoadTLUT_pal256(gDisplayListHead++, &gTLUTRedShell);
+    } else {
+        gDPLoadTLUT_pal256(gDisplayListHead++, common_tlut_blue_shell);
+    }
     gDPLoadTextureBlock(gDisplayListHead++, VIRTUAL_TO_PHYSICAL(phi_t3), G_IM_FMT_CI, G_IM_SIZ_8b, 32, 32, 0,
                         G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMIRROR | G_TX_CLAMP, G_TX_NOMASK, G_TX_NOMASK, G_TX_NOLOD,
                         G_TX_NOLOD);
@@ -1080,7 +1101,11 @@ void spawn_all_item_boxes(struct ActorSpawnData* spawnData) {
 
 // Not from decomp
 void spawn_item_box(Vec3f pos) {
-    Vec3f startingVelocity;
+    spawn_fixed_item_box(pos, ITEM_NONE);
+}
+
+void spawn_fixed_item_box(Vec3f pos, s16 itemId) {
+    Vec3f startingVelocity = { 0.0f, 0.0f, 0.0f };
     Vec3s startingRot;
     // struct ItemBox *itemBox;
 
@@ -1094,10 +1119,13 @@ void spawn_item_box(Vec3f pos) {
     startingRot[1] = random_u16();
     startingRot[2] = random_u16();
     s32 id = add_actor_to_empty_slot(pos, startingRot, startingVelocity, ACTOR_ITEM_BOX);
+    if (id < 0) return;
     f32 height = spawn_actor_on_surface(pos[0], pos[1] + 10.0f, pos[2]);
 
     struct ItemBox* box = (struct ItemBox*) CM_GetActor(id);
+    if (box == NULL) return;
 
+    box->itemOverride = itemId;
     box->resetDistance = height;
     box->origY = pos[1];
     box->pos[1] = height - 20.0f;
@@ -1466,6 +1494,13 @@ bool query_and_resolve_collision_player_actor(Player* player, Vec3f pos, f32 min
         }
         temp_f2_2 = ((xDist * xVelocity) + (zDist * zVelocity)) / temp_f0_5;
         temp_f2_2 = temp_f0_5 * temp_f2_2 * arg4 * 1.3f;
+        // At high simulation rates the kart can remain inside the obstacle
+        // for several frames after the first bounce. Only reflect velocity
+        // while it is moving toward the obstacle; keep separating positions
+        // on every frame so the kart cannot pass through it.
+        if (GameEngine_IsExperimentalNativeRace() && temp_f2_2 < 0.0f) {
+            temp_f2_2 = 0.0f;
+        }
         player->velocity[0] -= xDist * temp_f2_2;
         player->velocity[2] -= zDist * temp_f2_2;
         player->pos[0] += xDist * sp28 * 0.5f;
@@ -1474,15 +1509,20 @@ bool query_and_resolve_collision_player_actor(Player* player, Vec3f pos, f32 min
     return COLLISION;
 }
 
+static bool native_actor_feedback_due(Player* player, struct Actor* actor);
+
 bool collision_mario_sign(Player* player, struct Actor* marioRacewaySign) {
     if (query_and_resolve_collision_player_actor(player, marioRacewaySign->pos, 7.0f, 200.0f, 0.8f) == COLLISION) {
         if ((player->type & PLAYER_HUMAN) != 0) {
+            const bool feedbackDue = native_actor_feedback_due(player, marioRacewaySign);
             if ((player->effects & STAR_EFFECT) != 0) {
                 marioRacewaySign->flags |= 0x400;
-                func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0x80, 0x10));
-                func_800C90F4(player - gPlayerOne,
-                              (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
-            } else if ((player->type & PLAYER_INVISIBLE_OR_BOMB) == 0) {
+                if (feedbackDue) {
+                    func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0x80, 0x10));
+                    func_800C90F4(player - gPlayerOne,
+                                  (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+                }
+            } else if (feedbackDue && (player->type & PLAYER_INVISIBLE_OR_BOMB) == 0) {
                 func_800C9060(player - gPlayerOne, SOUND_ARG_LOAD(0x19, 0x00, 0x70, 0x1A));
             }
         }
@@ -1495,12 +1535,15 @@ bool collision_piranha_plant(Player* player, struct PiranhaPlant* plant) {
     if (query_and_resolve_collision_player_actor(player, plant->pos, plant->boundingBoxSize, plant->boundingBoxSize,
                                                  2.5f) == COLLISION) {
         if ((player->type & PLAYER_HUMAN) != 0) {
+            const bool feedbackDue = native_actor_feedback_due(player, (struct Actor*) plant);
             if ((player->effects & STAR_EFFECT) != 0) {
                 plant->flags |= 0x400;
-                func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0xA2, 0x4A));
-                func_800C90F4(player - gPlayerOne,
-                              (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
-            } else if ((player->type & PLAYER_INVISIBLE_OR_BOMB) == 0) {
+                if (feedbackDue) {
+                    func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0xA2, 0x4A));
+                    func_800C90F4(player - gPlayerOne,
+                                  (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+                }
+            } else if (feedbackDue && (player->type & PLAYER_INVISIBLE_OR_BOMB) == 0) {
                 func_800C9060(player - gPlayerOne, SOUND_ARG_LOAD(0x19, 0x00, 0xA0, 0x52));
             }
         }
@@ -1570,6 +1613,25 @@ bool collision_yoshi_egg(Player* player, struct YoshiValleyEgg* egg) {
     return true;
 }
 
+// Keep contact detection and separation at native rate, but prevent a single
+// overlapping actor from emitting collision feedback on every native frame.
+static bool native_actor_feedback_due(Player* player, struct Actor* actor) {
+    enum { MAX_TRACKED_ACTORS = 1024 };
+    static NativeFrameContact seen[NUM_RACERS][MAX_TRACKED_ACTORS];
+    static size_t previousTick;
+    if (!GameEngine_IsExperimentalNativeRace()) return true;
+    const ptrdiff_t playerIndex = player - gPlayers;
+    const size_t actorIndex = CM_FindActorIndex(actor);
+    if (playerIndex < 0 || playerIndex >= NUM_RACERS || actorIndex >= MAX_TRACKED_ACTORS) return true;
+    if (gTickCounter < previousTick) memset(seen, 0, sizeof(seen));
+    previousTick = gTickCounter;
+    const bool due = NativeFrameContact_Allow(&seen[playerIndex][actorIndex], actor, gTickCounter);
+    if (CVarGetInteger("gExperimentalTreeContactBenchmark", 0) && playerIndex == NUM_RACERS - 1) {
+        printf("TREE_FEEDBACK tick=%zu due=%d\n", gTickCounter, due);
+    }
+    return due;
+}
+
 bool collision_tree(Player* player, struct Actor* actor) {
     f32 x_dist;
     f32 y_dist;
@@ -1615,16 +1677,19 @@ bool collision_tree(Player* player, struct Actor* actor) {
     if (var_f16 < xz_dist) {
         return false;
     }
+    const bool feedbackDue = native_actor_feedback_due(player, actor);
     sp48 = player->velocity[0];
     sp44 = player->velocity[2];
     if (player->type & PLAYER_HUMAN) {
         if (player->effects & STAR_EFFECT) {
             actor->flags |= 0x400;
-            func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0x80, 0x10));
-            func_800C90F4(player - gPlayerOne, (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+            if (feedbackDue) {
+                func_800C98B8(player->pos, player->velocity, SOUND_ARG_LOAD(0x19, 0x01, 0x80, 0x10));
+                func_800C90F4(player - gPlayerOne, (player->characterId * 0x10) + SOUND_ARG_LOAD(0x29, 0x00, 0x80, 0x0D));
+            }
             return true;
         }
-        if (!(player->type & PLAYER_INVISIBLE_OR_BOMB)) {
+        if (feedbackDue && !(player->type & PLAYER_INVISIBLE_OR_BOMB)) {
             func_800C9060(player - gPlayerOne, SOUND_ARG_LOAD(0x19, 0x00, 0x70, 0x18));
         }
     }
@@ -1636,7 +1701,7 @@ bool collision_tree(Player* player, struct Actor* actor) {
     actorPos[2] = actor->pos[2];
     if (((IsMarioRaceway()) || (IsYoshiValley()) ||
          (IsRoyalRaceway()) || (IsLuigiRaceway())) &&
-        (player->speed > 1.0f)) {
+        (player->speed > 1.0f) && feedbackDue) {
         spawn_leaf(actorPos, 0);
     }
     if (xz_dist < 0.1f) {
@@ -1960,6 +2025,14 @@ void evaluate_actor_collision_between_two_destructible_actors(struct Actor* acto
     }
 }
 
+static void give_extra_bot_box_item(Player* player, s16 fixedItem) {
+    const s32 id = (s32)(player - gPlayerOne);
+    if (!(player->type & PLAYER_CPU) || (player->type & PLAYER_HUMAN) ||
+        !LocalMP_ExtraBotUsesItemBoxes(id) || cpu_ItemStrategy[id].branch != CPU_STRATEGY_WAIT_NEXT_ITEM)
+        return;
+    ExtraBot_StartItemRoulette(id, fixedItem);
+}
+
 void evaluate_collision_between_player_actor(Player* player, struct Actor* actor) {
     UNUSED s32 pad;
     s16 temp_lo;
@@ -2151,6 +2224,8 @@ void evaluate_collision_between_player_actor(Player* player, struct Actor* actor
                 actor->unk_04 = 0;
                 if (player->type & PLAYER_HUMAN) {
                     func_8007ABFC(player - gPlayerOne, ITEM_BLUE_SPINY_SHELL);
+                } else {
+                    give_extra_bot_box_item(player, ITEM_BLUE_SPINY_SHELL);
                 }
             } else if (actor->state == 0) {
                 actor->state = 1;
@@ -2163,7 +2238,9 @@ void evaluate_collision_between_player_actor(Player* player, struct Actor* actor
                 actor->flags = -0x8000;
                 actor->unk_04 = 0;
                 if (player->type & PLAYER_HUMAN) {
-                    func_8007ABFC(player - gPlayerOne, ITEM_NONE);
+                    func_8007ABFC(player - gPlayerOne, ((struct ItemBox*) actor)->itemOverride);
+                } else {
+                    give_extra_bot_box_item(player, ((struct ItemBox*) actor)->itemOverride);
                 }
             } else if (actor->state == 0) {
                 actor->state = 1;
@@ -2288,14 +2365,14 @@ void func_802A1064(struct FakeItemBox* fake_item_box) {
 
 #include "actors/fake_item_box/update.inc.c"
 
-void init_actor_hot_air_balloon_item_box(f32 x, f32 y, f32 z) {
+struct Actor* init_actor_hot_air_balloon_item_box(f32 x, f32 y, f32 z) {
     Vec3f pos;
     Vec3f velocity;
     Vec3s rot;
     s16 id;
 
     if (gModeSelection == TIME_TRIALS) {
-        return;
+        return NULL;
     }
 
     vec3s_set(rot, 0, 0, 0);
@@ -2304,7 +2381,7 @@ void init_actor_hot_air_balloon_item_box(f32 x, f32 y, f32 z) {
     pos[1] = y;
     pos[2] = z;
     id = add_actor_to_empty_slot(pos, rot, velocity, ACTOR_HOT_AIR_BALLOON_ITEM_BOX);
-    gActorHotAirBalloonItemBox = CM_GetActor(id);
+    return id >= 0 ? CM_GetActor(id) : NULL;
 }
 
 #include "actors/item_box/update.inc.c"
@@ -2328,6 +2405,16 @@ void render_item_boxes(ScreenContext* arg0) {
     struct Actor* actor;
     size_t i;
     D_8015F8DC = 0;
+
+    // Course and particle display lists can leave fog and alpha testing enabled.
+    // The stock box shell uses translucent vertex colors.
+    gDPPipeSync(gDisplayListHead++);
+    gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+    gDPSetAlphaCompare(gDisplayListHead++, G_AC_NONE);
+    gDPSetTextureLUT(gDisplayListHead++, G_TT_NONE);
+    gDPSetTexturePersp(gDisplayListHead++, G_TP_PERSP);
+    gSPClearGeometryMode(gDisplayListHead++, G_FOG | G_LIGHTING | G_CULL_FRONT);
+    gSPSetGeometryMode(gDisplayListHead++, G_ZBUFFER | G_SHADE | G_CULL_BACK | G_SHADING_SMOOTH);
 
     for (i = 0; i < CM_GetActorSize(); i++) {
         actor = CM_GetActor(i);

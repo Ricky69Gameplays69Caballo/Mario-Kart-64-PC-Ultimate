@@ -99,6 +99,7 @@ void func_80281D00(void) {
     gSPDisplayList(gDisplayListHead++, VIRTUAL_TO_PHYSICAL2(&D_80284EE0));
     func_80093F10();
     ceremony_transition_sliding_borders();
+    ceremony_update_sliding_borders();
     func_80281C40();
     init_rdp();
 }

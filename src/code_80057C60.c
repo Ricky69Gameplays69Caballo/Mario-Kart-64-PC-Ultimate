@@ -33,12 +33,16 @@
 #include "objects.h"
 #include "bomb_kart.h"
 #include "menus.h"
+#include "menu_items.h"
+#include <stdio.h>
 #include <assets/textures/other_textures.h>
 #include "spawn_players.h"
 #include "sounds.h"
 #include "data/some_data.h"
 #include <assets/textures/some_data.h>
 #include "port/Game.h"
+#include "port/Engine.h"
+#include "port/NativeFrameClock.h"
 #include "engine/Matrix.h"
 #include "engine/editor/Editor.h"
 #include "port/interpolation/FrameInterpolation.h"
@@ -715,6 +719,21 @@ void render_hud(u32 arg0) {
                 break;
         }
     }
+    // Draw once in the first viewport, using the game's original menu glyphs.
+    if (gRaceCustomCC && !gDemoMode && gHUDDisable == 0 && gIsHUDVisible != 0 &&
+        D_8018D22C == 0 &&
+        (arg0 == RENDER_SCREEN_MODE_1P_PLAYER_ONE ||
+         arg0 == RENDER_SCREEN_MODE_2P_HORIZONTAL_PLAYER_ONE ||
+         arg0 == RENDER_SCREEN_MODE_2P_VERTICAL_PLAYER_ONE ||
+         arg0 == RENDER_SCREEN_MODE_3P_4P_PLAYER_ONE)) {
+        char label[40];
+        snprintf(label, sizeof(label), "%.0f CC", CVarGetFloat("gCustomCC", 150.0f));
+        set_text_color(TEXT_YELLOW);
+        // The menu font clips glyphs outside the original 0..320 canvas.
+        // Only shift inward for narrow windows; keep normal/wide positions nonnegative.
+        const s32 left = (s32) OTRGetDimensionFromLeftEdge(10);
+        print_text_mode_1(left > 10 ? left : 10, 43, label, 0, 0.65f, 0.65f);
+    }
 }
 
 void func_80058F48(void) {
@@ -1236,21 +1255,20 @@ void func_8005A070(void) {
     D_801655C0 = 0;
     func_80041D34();
     if (gIsGamePaused == false && (Editor_IsPaused() == false)) {
-        func_8005C728();
-        if (gGamestate == ENDING) {
-            // func_80086604();
-            // func_80086D80();
-            // update_cheep_cheep(1);
-            // func_80077640();
-            CM_TickObjects();
-            CM_TickParticles();
-        } else if (gGamestate == CREDITS_SEQUENCE) {
-            func_80059820(PLAYER_ONE);
-            func_80078C70();
-            CM_TickObjects();
-            CM_TickParticles();
-        } else { // normal gameplay
-            func_80059D00();
+        const uint32_t steps = GameEngine_IsExperimentalNativePresentation() ? gNativeVisualSteps : 1;
+        for (uint32_t step = 0; step < steps; ++step) {
+            func_8005C728();
+            if (gGamestate == ENDING) {
+                CM_TickObjects();
+                CM_TickParticles();
+            } else if (gGamestate == CREDITS_SEQUENCE) {
+                func_80059820(PLAYER_ONE);
+                func_80078C70();
+                CM_TickObjects();
+                CM_TickParticles();
+            } else { // normal gameplay
+                func_80059D00();
+            }
         }
     }
     func_8008C204();
@@ -2873,7 +2891,7 @@ void setup_tyre_particles(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UN
     }
 }
 
-void func_8005EA94(Player* player, s16 arg1, s32 arg2, s8 arg3, UNUSED s8 arg4) {
+void func_8005EA94(Player* player, s16 arg1, s32 arg2, s16 arg3, UNUSED s8 arg4) {
     s32 temp_v0;
     s32 surfaceType;
     s32 var_t1;
@@ -2919,7 +2937,7 @@ void func_8005EA94(Player* player, s16 arg1, s32 arg2, s8 arg3, UNUSED s8 arg4) 
     }
 }
 
-void func_8005ED48(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_8005ED48(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 temp_v0;
     s32 surfaceType;
     s32 var_t3;
@@ -3109,7 +3127,7 @@ void func_8005ED48(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
 // Permuter hasn't found anything
 // https://decomp.me/scratch/WjMqd
 
-void func_8005F90C(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_8005F90C(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 var_t1;
     u8 surfaceType;
     f32 x;
@@ -3294,7 +3312,7 @@ void func_8005F90C(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
 GLOBAL_ASM("asm/non_matchings/code_80057C60/func_8005F90C.s")
 #endif
 
-void func_80060504(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80060504(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     UNUSED s32 thing1;
     s16 thing2;
     UNUSED s32 thing3;
@@ -3363,7 +3381,7 @@ void func_80060504(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
     player->particlePool0[arg1].unk_010 = 0;
 }
 
-void func_800608E0(Player* player, s16 arg1, UNUSED s32 arg2, s8 arg3, UNUSED s8 arg4) {
+void func_800608E0(Player* player, s16 arg1, UNUSED s32 arg2, s16 arg3, UNUSED s8 arg4) {
     f32 var_f0;
     f32 sp50;
     f32 sp4C;
@@ -3393,7 +3411,7 @@ void func_800608E0(Player* player, s16 arg1, UNUSED s32 arg2, s8 arg3, UNUSED s8
     player->particlePool0[arg1].pos[1] = player->pos[1] + sp4C;
 }
 
-void func_80060B14(Player* player, s16 arg1, s32 arg2, s8 arg3, s8 arg4) {
+void func_80060B14(Player* player, s16 arg1, s32 arg2, s16 arg3, s8 arg4) {
     if ((!IsSkyscraper()) && (!IsRainbowRoad())) {
         if ((arg1 == 0) &&
             ((player->particlePool0[arg2].unk_01E > 0) || (player->particlePool0[arg2].isAlive == 0))) {
@@ -3404,7 +3422,7 @@ void func_80060B14(Player* player, s16 arg1, s32 arg2, s8 arg3, s8 arg4) {
     }
 }
 
-void func_80060BCC(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80060BCC(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 sp54;
     UNUSED s32 pad;
     s32 sp4C;
@@ -3446,7 +3464,7 @@ void func_80060BCC(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
     }
 }
 
-void func_80060F50(Player* player, s16 arg1, UNUSED s32 arg2, s8 arg3, UNUSED s8 arg4) {
+void func_80060F50(Player* player, s16 arg1, UNUSED s32 arg2, s16 arg3, UNUSED s8 arg4) {
     set_particle_position_and_rotation(player, &player->particlePool0[arg1], 0.0f, 0.0f, 0.0f, 0, 0);
     init_particle_player(&player->particlePool0[arg1], 5, 4.0f);
 
@@ -3464,7 +3482,7 @@ void func_80060F50(Player* player, s16 arg1, UNUSED s32 arg2, s8 arg3, UNUSED s8
     player->oobProps &= ~UNDER_OOB_LEVEL;
 }
 
-void func_80061094(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80061094(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     if (arg1 == 0) {
         set_particle_position_and_rotation(player, &player->particlePool0[arg1], 0.0f, 0.0f, 0.0f, 0, 0);
         init_particle_player(&player->particlePool0[arg1], 6, 3.8f);
@@ -3475,7 +3493,7 @@ void func_80061094(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UN
     }
 }
 
-void func_80061130(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80061130(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     set_particle_position_and_rotation(player, &player->particlePool0[arg1], 0.0f, 0.0f, 0.0f, 0, 0);
     init_particle_player(&player->particlePool0[arg1], 7, 0.6f);
     set_particle_colour(&player->particlePool0[arg1], 0xFFFFFF, 0xD0);
@@ -3489,7 +3507,7 @@ void func_80061130(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UN
     player->particlePool0[arg1].unk_024 = 0.0f;
 }
 
-void func_80061224(Player* player, s16 arg1, s32 arg2, s8 arg3, s8 arg4) {
+void func_80061224(Player* player, s16 arg1, s32 arg2, s16 arg3, s8 arg4) {
     if ((arg1 == 0) &&
         ((player->particlePool0[arg2].unk_01E > 0) || (player->particlePool0[arg1].isAlive == 0))) {
         func_80061130(player, arg1, arg2, arg3, arg4);
@@ -3501,7 +3519,7 @@ void func_80061224(Player* player, s16 arg1, s32 arg2, s8 arg3, s8 arg4) {
     }
 }
 
-void func_800612F8(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_800612F8(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 var_s2;
 
     for (var_s2 = 0; var_s2 < 10; var_s2++) {
@@ -3519,7 +3537,7 @@ void func_800612F8(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s8 a
     player->unk_046 &= ~0x0008;
 }
 
-void func_80061430(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80061430(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 var_s2;
 
     for (var_s2 = 0; var_s2 < 7; var_s2++) {
@@ -3539,7 +3557,7 @@ void func_80061430(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s8 a
     player->kartProps &= ~UNUSED_0x1000;
 }
 
-void func_800615AC(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_800615AC(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 test = 2;
     UNUSED s32 stackPadding0;
     UNUSED s32 stackPadding1;
@@ -3597,7 +3615,7 @@ void func_80061754(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s32 arg3, U
     player->particlePool3[arg1].scale = sp48 + 1.0f;
 }
 
-void func_8006199C(Player* player, s16 arg1, s32 arg2, s8 arg3, s8 arg4) {
+void func_8006199C(Player* player, s16 arg1, s32 arg2, s16 arg3, s8 arg4) {
     if ((arg1 == 0) &&
         ((player->particlePool3[arg2].unk_01E > 0) || (player->particlePool3[arg2].isAlive == 0))) {
         func_80061754(player, arg1, arg2, (s32) arg3, arg4);
@@ -3606,7 +3624,7 @@ void func_8006199C(Player* player, s16 arg1, s32 arg2, s8 arg3, s8 arg4) {
     }
 }
 
-void func_80061A34(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80061A34(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 sp54;
     UNUSED s32 stackPadding0;
     s32 sp4C;
@@ -3637,7 +3655,7 @@ void func_80061A34(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
     }
 }
 
-void func_80061D4C(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80061D4C(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 test = 2;
     UNUSED s32 stackPadding0;
     UNUSED s32 stackPadding1;
@@ -3660,7 +3678,7 @@ void func_80061D4C(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UN
     }
 }
 
-void func_80061EF4(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_80061EF4(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     UNUSED s32 stackPadding0;
     s32 var_t0 = 0x000000FF;
     s32 var_t1;
@@ -3718,7 +3736,7 @@ void func_80061EF4(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8
     }
 }
 
-void func_800621BC(Player* player, s16 arg1, s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_800621BC(Player* player, s16 arg1, s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 temp_v1;
     s32 phi_t0;
     s32 phi_t1;
@@ -3798,7 +3816,7 @@ void func_80062484(Player* player, UnkPlayerStruct258* arg1, s32 arg2) {
     arg1->unk_01E = 0;
 }
 
-void func_800624D8(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s8 arg3, UNUSED s8 arg4) {
+void func_800624D8(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s16 arg3, UNUSED s8 arg4) {
     s32 var_s1;
 
     switch (player->surfaceType) {
@@ -3888,7 +3906,7 @@ void func_800624D8(Player* player, UNUSED s32 arg1, UNUSED s32 arg2, UNUSED s8 a
     }
 }
 
-void func_800628C0(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_800628C0(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].isAlive = 1;
     player->particlePool2[index].unk_020 = -player->rotation[1];
     player->particlePool2[index].type = 2;
@@ -3896,7 +3914,7 @@ void func_800628C0(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].scale = 0.2f;
 }
 
-void func_80062914(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80062914(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].isAlive = 1;
     player->particlePool2[index].unk_020 = -player->rotation[1];
     player->particlePool2[index].type = 4;
@@ -3904,7 +3922,7 @@ void func_80062914(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].scale = 1.0f;
 }
 
-void func_80062968(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80062968(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].isAlive = 1;
     player->particlePool2[index].unk_020 = -player->rotation[1];
     player->particlePool2[index].type = 5;
@@ -3912,7 +3930,7 @@ void func_80062968(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].scale = 0.2f;
 }
 
-void func_800629BC(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_800629BC(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].isAlive = 1;
     player->particlePool2[index].unk_020 = -player->rotation[1];
     player->particlePool2[index].type = 6;
@@ -3921,10 +3939,10 @@ void func_800629BC(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].pos[1] = 0.0f;
 }
 
-void func_80062A18(Player* player, s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80062A18(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].isAlive = 1;
     player->particlePool2[index].type = 3;
-    player->particlePool2[arg1 /* arg1 instead of arg3 */].scale = 0.2f;
+    player->particlePool2[index].scale = 0.2f;
     player->particlePool2[index].unk_01E = 1;
     player->particlePool2[index].unk_020 = 0;
     player->kartGraphics &= ~WHIRRR;
@@ -3933,7 +3951,7 @@ void func_80062A18(Player* player, s8 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].pos[1] = (player->pos[1] + 4.0f);
 }
 
-void func_80062AA8(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80062AA8(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].isAlive = 1;
     player->particlePool2[index].type = 5;
     player->particlePool2[index].scale = 0.1f;
@@ -4032,7 +4050,7 @@ void func_80062C74(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s32 arg3) {
     player->particlePool0[arg1].pos[1] = player->particlePool0[arg1].unk_024 + sp38;
 }
 
-void func_80062F98(Player* player, s16 arg1, s8 arg2, UNUSED s8 arg3) {
+void func_80062F98(Player* player, s16 arg1, s16 arg2, UNUSED s8 arg3) {
     f32 temp_f0;
 
     temp_f0 = player->particlePool1[arg1].unk_018 / 10.0f;
@@ -4054,7 +4072,7 @@ void func_80062F98(Player* player, s16 arg1, s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void set_oob_splash_particle_position(Player* player, s16 arg1, s8 arg2, UNUSED s8 arg3) {
+void set_oob_splash_particle_position(Player* player, s16 arg1, s16 arg2, UNUSED s8 arg3) {
     ++player->particlePool0[arg1].unk_01E;
     player->particlePool0[arg1].pos[2] = player->pos[2] + coss(player->particlePool0[arg1].unk_020) * -5.8;
     player->particlePool0[arg1].pos[0] = player->pos[0] + sins(player->particlePool0[arg1].unk_020) * -5.8;
@@ -4066,7 +4084,7 @@ void set_oob_splash_particle_position(Player* player, s16 arg1, s8 arg2, UNUSED 
     }
 }
 
-void func_800631A8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800631A8(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     ++player->particlePool0[arg1].unk_01E;
     if ((s32) player->particlePool0[arg1].unk_01E < 9) {
         if ((player->particlePool0[arg1].unk_01E & 1) != 0) {
@@ -4091,7 +4109,7 @@ void func_800631A8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80063268(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80063268(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     if (player->particlePool0[arg1].unk_01E >= 0x1E) {
         player->particlePool0[arg1].unk_040 += 0x1FFE;
     } else {
@@ -4121,7 +4139,7 @@ void func_80063268(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80063408(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80063408(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     if (player->particlePool1[arg1].unk_010 == 1) {
         player->particlePool1[arg1].pos[2] =
             player->tyres[BACK_LEFT].pos[2] +
@@ -4162,7 +4180,7 @@ void func_80063408(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800635D4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800635D4(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     f32 sp44;
     f32 sp40;
     f32 sp3C;
@@ -4232,7 +4250,7 @@ void func_800635D4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800639DC(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800639DC(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     if (player->particlePool1[arg1].unk_010 == 1) {
         player->particlePool1[arg1].pos[2] =
             player->tyres[BACK_LEFT].pos[2] +
@@ -4275,7 +4293,7 @@ void func_800639DC(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80063BD4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80063BD4(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     if (player->particlePool1[arg1].unk_010 == 1) {
         player->particlePool1[arg1].pos[2] =
             player->tyres[BACK_LEFT].pos[2] +
@@ -4304,7 +4322,7 @@ void func_80063BD4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     player->particlePool1[arg1].scale -= 0.06;
 }
 
-void func_80063D58(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80063D58(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     if (player->particlePool1[arg1].unk_010 == 1) {
         player->particlePool1[arg1].pos[2] =
             player->tyres[BACK_LEFT].pos[2] +
@@ -4372,7 +4390,7 @@ void func_80063FBC(Player* player, s16 arg1, UNUSED s32 arg2, UNUSED s32 arg3) {
     }
 }
 
-void func_80064184(Player* player, s16 arg1, s8 arg2, UNUSED s8 arg3) {
+void func_80064184(Player* player, s16 arg1, s16 arg2, UNUSED s8 arg3) {
     f32 sp44;
     f32 sp40;
     f32 sp3C;
@@ -4407,7 +4425,7 @@ void func_80064184(Player* player, s16 arg1, s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800643A8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800643A8(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     player->particlePool1[arg1].pos[2] = player->pos[2] + (-1.2 * player->particlePool1[arg1].unk_01E *
                                                                  coss(player->particlePool1[arg1].unk_020));
     player->particlePool1[arg1].pos[0] = player->pos[0] + (-1.2 * player->particlePool1[arg1].unk_01E *
@@ -4428,7 +4446,7 @@ void func_800643A8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800644E8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800644E8(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     f32 thing2;
     UNUSED s32 stackPadding0;
     s32 thing;
@@ -4459,7 +4477,7 @@ void func_800644E8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80064664(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80064664(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     f32 temp_f4;
     UNUSED s32 stackPadding0;
     s32 temp_v1;
@@ -4487,7 +4505,7 @@ void func_80064664(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800647C8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800647C8(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
 
     ++player->particlePool3[arg1].unk_01E;
     player->particlePool3[arg1].pos[2] = player->pos[2] + ((-0.8 * (player->particlePool3[arg1].unk_01E)) *
@@ -4508,7 +4526,7 @@ void func_800647C8(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800648E4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800648E4(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     ++player->particlePool3[arg1].unk_01E;
     player->particlePool3[arg1].scale -= 0.06;
     player->particlePool3[arg1].pos[1] += 0.1;
@@ -4525,7 +4543,7 @@ void func_800648E4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80064988(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80064988(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     ++player->particlePool3[arg1].unk_01E;
     player->particlePool3[arg1].pos[1] -= 0.3;
 
@@ -4536,7 +4554,7 @@ void func_80064988(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_800649F4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_800649F4(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     f32 temp;
     temp = player->particlePool3[arg1].unk_018;
 
@@ -4564,7 +4582,7 @@ void func_800649F4(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80064B30(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80064B30(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
     f32 temp;
     temp = player->particlePool3[arg1].unk_018 * 1.2;
 
@@ -4590,7 +4608,7 @@ void func_80064B30(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80064C74(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
+void func_80064C74(Player* player, s16 arg1, UNUSED s16 arg2, UNUSED s8 arg3) {
 
     if (player->particlePool3[arg1].unk_010 == 1) {
         player->particlePool3[arg1].unk_020 += 2184;
@@ -4621,7 +4639,7 @@ void func_80064C74(Player* player, s16 arg1, UNUSED s8 arg2, UNUSED s8 arg3) {
     }
 }
 
-void func_80064DEC(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80064DEC(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
 
     player->particlePool2[index].pos[1] = player->pos[1];
     ++player->particlePool2[index].unk_01E;
@@ -4639,7 +4657,7 @@ void func_80064DEC(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     }
 }
 
-void func_80064EA4(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80064EA4(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     ++player->particlePool2[index].unk_01E;
     if (player->particlePool2[index].unk_01E < 4) {
         player->particlePool2[index].scale += 1.2;
@@ -4657,7 +4675,7 @@ void func_80064EA4(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     }
 }
 
-void func_80064F88(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80064F88(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     ++player->particlePool2[index].unk_01E;
     player->particlePool2[index].scale += 0.15;
 
@@ -4672,7 +4690,7 @@ void func_80064F88(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     }
 }
 
-void func_80065030(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_80065030(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     ++player->particlePool2[index].unk_01E;
 
     player->particlePool2[index].pos[1] += 0.8;
@@ -4689,7 +4707,7 @@ void func_80065030(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     }
 }
 
-void func_800650FC(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_800650FC(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     player->particlePool2[index].pos[2] = (f32) player->pos[2];
     player->particlePool2[index].pos[0] = (f32) player->pos[0];
     player->particlePool2[index].pos[1] = (f32) (player->pos[1] + 4.0f);
@@ -4711,7 +4729,7 @@ void func_800650FC(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
     }
 }
 
-void func_800651F4(Player* player, UNUSED s8 arg1, UNUSED s8 arg2, s8 index) {
+void func_800651F4(Player* player, UNUSED s16 arg1, UNUSED s8 arg2, s8 index) {
     ++player->particlePool2[index].unk_01E;
     if (player->particlePool2[index].unk_01E < 8) {
         player->particlePool2[index].scale += 0.2;
@@ -4740,7 +4758,7 @@ void func_800652D4(Vec3f arg0, Vec3s arg1, f32 arg2) {
     AddEffectMatrix(mtx, G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
 }
 
-void func_8006538C(Player* player, s8 arg1, s16 arg2, s8 arg3) {
+void func_8006538C(Player* player, s16 arg1, s16 arg2, s8 arg3) {
     Vec3f spB4;
     Vec3s spAC;
     s32 primColors[] = { MAKE_RGB(0xFB, 0xFF, 0xFB), MAKE_RGB(0xFF, 0xFB, 0x86) };
@@ -4798,7 +4816,7 @@ void func_8006538C(Player* player, s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_800658A0(Player* player, s8 playerId, s16 idx, s8 screenId) {
+void func_800658A0(Player* player, s16 playerId, s16 idx, s8 screenId) {
     Vec3f sp54;
     Vec3s sp4C;
     s16 red;
@@ -4817,7 +4835,7 @@ void func_800658A0(Player* player, s8 playerId, s16 idx, s8 screenId) {
         sp4C[0] = 0;
         sp4C[1] = player->unk_048[screenId];
         sp4C[2] = 0;
-        FrameInterpolation_RecordOpenChild("some_ply_part4", (idx << 8) | (playerId << 4) | screenId);
+        FrameInterpolation_RecordOpenChild("some_ply_part4", (idx << 16) | (playerId << 4) | screenId);
         func_800652D4(sp54, sp4C, player->particlePool0[idx].scale * player->size);
         gSPDisplayList(gDisplayListHead++, D_0D008DB8);
         gDPLoadTextureBlock(gDisplayListHead++, D_8018D48C, G_IM_FMT_IA, G_IM_SIZ_8b, 32, 32, 0,
@@ -4833,7 +4851,7 @@ void func_800658A0(Player* player, s8 playerId, s16 idx, s8 screenId) {
 #ifdef NON_MATCHING
 // Something about the handling of the prim/env colors is off,
 // its causing a huge diff. Can't figure out what's up.
-void render_player_drift_particles(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void render_player_drift_particles(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f spB4;
     Vec3s spAC;
     s32 var_s0;
@@ -4892,7 +4910,7 @@ GLOBAL_ASM("asm/non_matchings/code_80057C60/render_player_drift_particles.s")
 #ifdef NON_MATCHING
 // https://decomp.me/scratch/KEz08
 //  Something is very wrong with the handling of prim/evn colors, but I can't figuer out what.
-void render_player_ground_particles(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void render_player_ground_particles(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f spDC;
     Vec3s spD4;
     s16 primRed;
@@ -4962,7 +4980,7 @@ void render_player_ground_particles(Player* player, UNUSED s8 arg1, s16 arg2, s8
 GLOBAL_ASM("asm/non_matchings/code_80057C60/render_player_ground_particles.s")
 #endif
 
-void func_800664E0(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_800664E0(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp54;
     Vec3s sp4C;
     s16 red;
@@ -5026,7 +5044,7 @@ UNUSED void func_80066714(Player* player, UNUSED s32 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_80066998(Player* player, s8 playerId, s16 arg2, s8 screenId) {
+void func_80066998(Player* player, s16 playerId, s16 arg2, s8 screenId) {
     Vec3f sp54;
     Vec3s sp4C;
     s16 red;
@@ -5045,7 +5063,7 @@ void func_80066998(Player* player, s8 playerId, s16 arg2, s8 screenId) {
         sp4C[0] = 0x4000;
         sp4C[1] = player->unk_048[screenId];
         sp4C[2] = 0;
-        FrameInterpolation_RecordOpenChild("some_ply_particle2", (arg2 << 8) | (playerId << 4) | screenId);
+        FrameInterpolation_RecordOpenChild("some_ply_particle2", (arg2 << 16) | (playerId << 4) | screenId);
         func_800652D4(sp54, sp4C, player->particlePool0[arg2].scale * player->size);
         gSPDisplayList(gDisplayListHead++, D_0D008DB8);
         gDPLoadTextureBlock(gDisplayListHead++, D_8018D48C, G_IM_FMT_IA, G_IM_SIZ_8b, 32, 32, 0,
@@ -5085,7 +5103,7 @@ Vtx D_800E8900a[][4] = {
     },
 };
 
-void func_80066BAC(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_80066BAC(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f spDC;
     Vec3s spD4;
     UNUSED s32 stackPadding;
@@ -5141,7 +5159,7 @@ void func_80066BAC(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_80067280(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_80067280(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp7C;
     Vec3s sp74;
     s16 red;
@@ -5182,7 +5200,7 @@ void func_80067280(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void render_player_boost_spark_particles(Player* player, s8 playerId, s16 arg2, s8 screenId) {
+void render_player_boost_spark_particles(Player* player, s16 playerId, s16 arg2, s8 screenId) {
     Vec3f sp8C;
     Vec3s sp84;
     UNUSED s32 stackPadding[4];
@@ -5194,7 +5212,7 @@ void render_player_boost_spark_particles(Player* player, s8 playerId, s16 arg2, 
         sp84[0] = 0;
         sp84[1] = player->unk_048[screenId];
         sp84[2] = 0;
-        FrameInterpolation_RecordOpenChild("boost_spark_particle", TAG_SMOKE_DUST((arg2 << 8) | (playerId << 4) | screenId));
+        FrameInterpolation_RecordOpenChild("boost_spark_particle", TAG_SMOKE_DUST((arg2 << 16) | (playerId << 4) | screenId));
         func_800652D4(sp8C, sp84, player->particlePool3[arg2].scale * player->size);
         if (player->particlePool3[arg2].unk_010 == 1) {
             gSPDisplayList(gDisplayListHead++, D_0D008DB8);
@@ -5216,7 +5234,7 @@ void render_player_boost_spark_particles(Player* player, s8 playerId, s16 arg2, 
     }
 }
 
-void render_player_onomatopoeia_whrrrr(Player* player, UNUSED s8 arg1, f32 arg2, UNUSED s8 arg3, s8 arg4) {
+void render_player_onomatopoeia_whrrrr(Player* player, UNUSED s16 arg1, f32 arg2, UNUSED s8 arg3, s8 arg4) {
     Vec3f sp9C;
     Vec3s sp94;
     UNUSED s32 stackPadding[2];
@@ -5307,7 +5325,7 @@ void render_music_note(Player* player, s8 screenId, u8* texture, s8 arg3, f32 ar
     }
 }
 
-void render_player_onomatopoeia_crash(Player* player, UNUSED s8 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
+void render_player_onomatopoeia_crash(Player* player, UNUSED s16 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
     UNUSED s32 stackPadding[16]; // huh?
     Vec3f sp9C;
     Vec3s sp94;
@@ -5337,7 +5355,7 @@ void render_player_onomatopoeia_crash(Player* player, UNUSED s8 arg1, UNUSED f32
     }
 }
 
-void func_80068724(Player* player, UNUSED s8 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
+void func_80068724(Player* player, UNUSED s16 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
     UNUSED s32 stackPadding[16]; // huh?
     Vec3f sp84;
     Vec3s sp7C;
@@ -5367,7 +5385,7 @@ void func_80068724(Player* player, UNUSED s8 arg1, UNUSED f32 arg2, s8 arg3, s8 
     }
 }
 
-void render_player_onomatopoeia_boing(Player* player, UNUSED s8 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
+void render_player_onomatopoeia_boing(Player* player, UNUSED s16 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
     Vec3f sp64;
     Vec3s sp5C;
 
@@ -5400,7 +5418,7 @@ void render_player_onomatopoeia_boing(Player* player, UNUSED s8 arg1, UNUSED f32
     }
 }
 
-void render_player_onomatopoeia_pomp(Player* player, UNUSED s8 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
+void render_player_onomatopoeia_pomp(Player* player, UNUSED s16 arg1, UNUSED f32 arg2, s8 arg3, s8 arg4) {
     Vec3f sp9C;
     Vec3s sp94;
 
@@ -5429,7 +5447,7 @@ void render_player_onomatopoeia_pomp(Player* player, UNUSED s8 arg1, UNUSED f32 
     }
 }
 
-void func_800691B8(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_800691B8(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp5C;
     Vec3s sp54;
     s16 alpha;
@@ -5457,7 +5475,7 @@ void func_800691B8(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_80069444(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_80069444(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp74;
     Vec3s sp6C;
     s16 primRed;
@@ -5500,7 +5518,7 @@ void func_80069444(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void render_wall_bonk_star_particles(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3, f32 arg4) {
+void render_wall_bonk_star_particles(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3, f32 arg4) {
     Vec3f sp5C;
     Vec3s sp54;
     s16 alpha;
@@ -5528,7 +5546,7 @@ void render_wall_bonk_star_particles(Player* player, UNUSED s8 arg1, s16 arg2, s
     }
 }
 
-void func_80069938(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_80069938(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp5C;
     Vec3s sp54;
     s16 alpha;
@@ -5555,7 +5573,7 @@ void func_80069938(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_80069BA8(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_80069BA8(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp54;
     Vec3s sp4C;
     s16 red;
@@ -5585,7 +5603,7 @@ void func_80069BA8(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_80069DB8(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_80069DB8(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp5C;
     Vec3s sp54;
     UNUSED s32 stackPadding[2];
@@ -5611,7 +5629,7 @@ void func_80069DB8(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_8006A01C(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
+void func_8006A01C(Player* player, UNUSED s16 arg1, s16 arg2, s8 arg3) {
     Vec3f sp54;
     Vec3s sp4C;
 
@@ -5637,7 +5655,7 @@ void func_8006A01C(Player* player, UNUSED s8 arg1, s16 arg2, s8 arg3) {
     }
 }
 
-void func_8006A280(Player* player, s8 playerId, s16 arg2, s8 screenId) {
+void func_8006A280(Player* player, s16 playerId, s16 arg2, s8 screenId) {
     Vec3f sp5C;
     Vec3s sp54;
     s16 red;
@@ -5654,7 +5672,7 @@ void func_8006A280(Player* player, s8 playerId, s16 arg2, s8 screenId) {
         sp54[0] = 0;
         sp54[1] = player->unk_048[screenId];
         sp54[2] = 0;
-        FrameInterpolation_RecordOpenChild("some_ply_particle", (arg2 << 8) | (playerId << 4) | screenId);
+        FrameInterpolation_RecordOpenChild("some_ply_particle", (arg2 << 16) | (playerId << 4) | screenId);
         func_800652D4(sp5C, sp54, player->particlePool0[arg2].scale * player->size);
         gSPDisplayList(gDisplayListHead++, D_0D008D58);
         gDPSetTextureLUT(gDisplayListHead++, G_TT_NONE);
@@ -5883,13 +5901,13 @@ void init_all_player_balloons(Player* player, s8 arg1) {
     gPlayerBalloonCount[arg1] = 2;
 }
 
-void clear_all_player_balloons(UNUSED Player* player, s8 playerIndex) {
+void clear_all_player_balloons(UNUSED Player* player, s16 playerIndex) {
     gPlayerBalloonStatus[playerIndex][0] = BALLOON_STATUS_GONE;
     gPlayerBalloonStatus[playerIndex][1] = BALLOON_STATUS_GONE;
     gPlayerBalloonStatus[playerIndex][2] = BALLOON_STATUS_GONE;
 }
 
-void pop_player_balloon(Player* player, s8 playerIndex) {
+void pop_player_balloon(Player* player, s16 playerIndex) {
     if (gPlayerBalloonCount[playerIndex] >= 0) {
         gPlayerBalloonStatus[playerIndex][gPlayerBalloonCount[playerIndex]] &= ~1;
         gPlayerBalloonStatus[playerIndex][gPlayerBalloonCount[playerIndex]] |= 2;
@@ -5907,7 +5925,7 @@ void set_player_balloon_to_gone(UNUSED s32 arg0, s8 playerIndex, s8 balloonIndex
     }
 }
 
-void func_8006B9CC(Player* player, s8 arg1) {
+void func_8006B9CC(Player* player, s16 arg1) {
     if (gPlayerBalloonStatus[arg1][0] != 0) {
         func_8006A7C0(player, 0.0f, 0.0f, arg1, 0);
     }
@@ -5922,7 +5940,7 @@ void func_8006B9CC(Player* player, s8 arg1) {
     }
 }
 
-void func_8006BA94(Player* player, s8 playerIndex, s8 arg2) {
+void func_8006BA94(Player* player, s16 playerIndex, s8 arg2) {
     if (gPlayerBalloonStatus[playerIndex][0] != BALLOON_STATUS_GONE) {
         render_battle_balloon(player, playerIndex, 0, arg2);
     }
@@ -6081,8 +6099,8 @@ void func_8006C4D4(Vec3f arg0, f32 arg1, s32 rgb, s16 alpha, s16 arg4) {
     gMatrixEffectCount += 1;
 }
 
-void func_8006C6AC(Player* player, s16 particleIndex, s8 arg2, s8 arg3) {
-    s8 arg2_copy = arg2;
+void func_8006C6AC(Player* player, s16 particleIndex, s16 arg2, s8 arg3) {
+    s16 arg2_copy = arg2;
     s32 sp28;
 
     sp28 = particleIndex - 1;
@@ -6137,7 +6155,7 @@ void func_8006C6AC(Player* player, s16 particleIndex, s8 arg2, s8 arg3) {
     }
 }
 
-void func_8006C9B8(Player* player, s16 arg1, s8 arg2, s8 arg3) {
+void func_8006C9B8(Player* player, s16 arg1, s16 arg2, s8 arg3) {
     UNUSED s32 stackPadding;
     s32 sp28;
     sp28 = arg1 - 1;
@@ -6240,7 +6258,7 @@ void func_8006C9B8(Player* player, s16 arg1, s8 arg2, s8 arg3) {
     }
 }
 
-void func_8006CEC0(Player* player, s16 arg1, s8 arg2, s8 arg3) {
+void func_8006CEC0(Player* player, s16 arg1, s16 arg2, s8 arg3) {
     UNUSED u16 temp_v0_3;
     s32 sp20 = arg1;
     if (--sp20 < 0) {
@@ -6305,7 +6323,7 @@ void func_8006CEC0(Player* player, s16 arg1, s8 arg2, s8 arg3) {
     }
 }
 
-void func_8006D194(Player* player, s8 arg1, s8 arg2) {
+void func_8006D194(Player* player, s16 arg1, s8 arg2) {
     if (player->particlePool2[0].isAlive == 1) {
         switch (player->particlePool2[0].type) {
             case 2:
@@ -6350,7 +6368,7 @@ void func_8006D194(Player* player, s8 arg1, s8 arg2) {
     }
 }
 
-void func_8006D474(Player* player, s8 playerId, s8 screenId) {
+void func_8006D474(Player* player, s16 playerId, s8 screenId) {
     s16 var_s2;
     if ((player->unk_002 & (SIDE_OF_KART << (screenId * 4))) == (SIDE_OF_KART << (screenId * 4))) {
         for (var_s2 = 0; var_s2 < 10; var_s2++) {
@@ -6491,7 +6509,7 @@ void func_8006D474(Player* player, s8 playerId, s8 screenId) {
     }
 }
 
-void func_8006DC54(Player* player, s8 playerId, s8 screenId) {
+void func_8006DC54(Player* player, s16 playerId, s8 screenId) {
     s16 i;
     u64 bitwiseMask;
 
@@ -6505,7 +6523,7 @@ void func_8006DC54(Player* player, s8 playerId, s8 screenId) {
     }
 }
 
-void func_8006DD3C(Player* player, s8 playerId, s8 screenId) {
+void func_8006DD3C(Player* player, s16 playerId, s8 screenId) {
     s16 temp_s0;
     u64 temp_v0;
 
@@ -6556,7 +6574,7 @@ void func_8006DD3C(Player* player, s8 playerId, s8 screenId) {
 
 void func_8006E058(void) {
     if (LocalMP_IsActive()) {
-        for (s8 i = 0; i < LocalMP_RacerCount(); i++) func_8006E420(&gPlayers[i], i, 0);
+        for (s32 i = 0; i < LocalMP_RacerCount(); i++) func_8006E420(&gPlayers[i], i, 0);
         return;
     }
     switch (gActiveScreenMode) {
@@ -6655,7 +6673,7 @@ void func_8006E058(void) {
     }
 }
 
-void func_8006E420(Player* player, s8 arg1, s8 arg2) {
+void func_8006E420(Player* player, s16 arg1, s8 arg2) {
     s16 temp_s0;
 
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
@@ -6677,7 +6695,7 @@ void func_8006E420(Player* player, s8 arg1, s8 arg2) {
     }
 }
 
-void render_kart_particles(Player* player, s8 playerId, s8 screenId) {
+void render_kart_particles(Player* player, s16 playerId, s8 screenId) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         if ((player->effects & BOO_EFFECT) == BOO_EFFECT) {
             if (playerId == screenId) {
@@ -6690,7 +6708,7 @@ void render_kart_particles(Player* player, s8 playerId, s8 screenId) {
     }
 }
 
-void func_8006E7CC(Player* player, s8 arg1, s8 arg2) {
+void func_8006E7CC(Player* player, s16 arg1, s8 arg2) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         if ((player->effects & BOO_EFFECT) == BOO_EFFECT) {
             if (arg1 == arg2) {
@@ -6702,7 +6720,7 @@ void func_8006E7CC(Player* player, s8 arg1, s8 arg2) {
     }
 }
 
-void func_8006E848(Player* player, s8 arg1, s8 arg2) {
+void func_8006E848(Player* player, s16 arg1, s8 arg2) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         if ((player->effects & BOO_EFFECT) == BOO_EFFECT) {
             if (arg1 == arg2) {
@@ -6714,7 +6732,7 @@ void func_8006E848(Player* player, s8 arg1, s8 arg2) {
     }
 }
 
-void func_8006E8C4(Player* player, s8 arg1, s8 arg2) {
+void func_8006E8C4(Player* player, s16 arg1, s8 arg2) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         if ((player->effects & BOO_EFFECT) == BOO_EFFECT) {
             if (arg1 == arg2) {
@@ -6726,7 +6744,7 @@ void func_8006E8C4(Player* player, s8 arg1, s8 arg2) {
     }
 }
 
-void func_8006E940(Player* player, s8 arg1, s8 arg2) {
+void func_8006E940(Player* player, s16 arg1, s8 arg2) {
     if ((player->type & PLAYER_EXISTS) == PLAYER_EXISTS) {
         if ((player->effects & BOO_EFFECT) == BOO_EFFECT) {
             if (arg1 == arg2) {

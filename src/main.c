@@ -1,3 +1,4 @@
+extern void PerfDiagMark(int section);
 #include "port/LocalMultiplayer.h"
 #include <libultraship.h>
 #include <libultra/vi.h>
@@ -7,6 +8,7 @@
 #include <decode.h>
 #include <mk64.h>
 #include <stubs.h>
+#include <stdio.h>
 #include "racing/framebuffer_effects.h"
 
 #include "profiler.h"
@@ -32,6 +34,7 @@
 #include "player_controller.h"
 #include "render_player.h"
 #include "racing/actors.h"
+#include "racing/actors_extended.h"
 #include "replays.h"
 #include <debug.h>
 #include "enhancements/freecam/freecam.h"
@@ -40,6 +43,8 @@
 #include "engine/wasm.h"
 #include "port/Game.h"
 #include "port/Engine.h"
+#include "port/NativeFrameClock.h"
+#include "kart_attributes.h"
 #include "engine/Matrix.h"
 #include "engine/TrackBrowser.h"
 
@@ -183,6 +188,11 @@ s32 D_800DC540 = 0;
 s32 D_800DC544 = 0;
 s32 gCCSelection = CC_150;
 s32 gGlobalTimer = 0;
+// Graphics command pools must alternate on every presentation, even when
+// the legacy visual timer advances less often than the render rate.
+static u32 sNativePresentationCounter = 0;
+static uint64_t sNativeVisualTicks = 0;
+static int sWasNativeVisual = 0;
 UNUSED s32 D_800DC550 = 0;
 UNUSED s32 D_800DC554 = 0;
 UNUSED s32 D_800DC558 = 0;
@@ -307,11 +317,19 @@ void create_gfx_task_structure(void) {
     if (GfxDebuggerIsDebuggingRequested()) {
         GfxDebuggerDebugDisplayList(gGfxPool->gfxPool);
     }
+    profiler_log_thread5_time(BEFORE_DISPLAY_LISTS);
     Graphics_PushFrame(gGfxPool->gfxPool);
+    profiler_log_thread5_time(AFTER_DISPLAY_LISTS);
 #endif
 }
 
 f32 gDeltaTime = 0.0f;
+// Unclamped elapsed time is used only by the experimental simulation clock.
+static f32 sNativeElapsedTime = 0.0f;
+f32 gNativeSimulationTickScale = 1.0f;
+uint32_t gNativeSimulationLegacyTicks = 1;
+uint32_t gNativeVisualSteps = 1;
+float gNativeVisualPhase = 0.0f;
 void calculate_delta_time(void) {
     static u32 prevtime = 0;
     u32 now = osGetCount();
@@ -324,6 +342,7 @@ void calculate_delta_time(void) {
         deltaTime = (f32) ((0xffffffff - prevtime) + 1 + now) / OS_CPU_COUNTER;
     }
 
+    sNativeElapsedTime = prevtime == 0 ? 0.0f : deltaTime;
     prevtime = now;
 
     // Cap deltaTime to avoid large jumps (e.g., on pause/resume)
@@ -348,6 +367,34 @@ void init_controllers(void) {
 void update_controller(s32 index) {
     struct Controller* controller = &gControllers[index];
     u16 stick;
+
+    if (index == 0 && CVarGetInteger("gExperimentalMenuBenchmarkInput", 0) &&
+        gMenuSelection == MAIN_MENU && gMainMenuSelection == MAIN_MENU_PLAYER_SELECT &&
+        gFadeModeSelection == FADE_MODE_NONE) {
+        static s32 menuTestStart = -1;
+        if (menuTestStart < 0) menuTestStart = gGlobalTimer;
+        const s32 elapsed = gGlobalTimer - menuTestStart;
+        gControllerPads[index].stick_x = 0;
+        gControllerPads[index].stick_y = 0;
+        gControllerPads[index].button = elapsed == 30 ? R_JPAD : elapsed == 60 ? L_JPAD : 0;
+    }
+
+    // Reproducible, opt-in benchmark input: drive straight after the start.
+    // Never read a real controller for this test player while it is active.
+    if (index == 0 && CVarGetInteger("gExperimentalNativeBenchmark", 0) && gGamestate == RACING) {
+        s32 benchSteer = CVarGetInteger("gExperimentalBenchmarkSteer", 0);
+        if (benchSteer < -80) benchSteer = -80;
+        if (benchSteer > 80) benchSteer = 80;
+        gControllerPads[index].stick_x = gRaceState == RACE_IN_PROGRESS ? benchSteer : 0;
+        gControllerPads[index].stick_y = 0;
+        gControllerPads[index].right_stick_x = 0;
+        gControllerPads[index].right_stick_y = 0;
+        gControllerPads[index].button = gRaceState == RACE_IN_PROGRESS &&
+            CVarGetInteger("gExperimentalAirBenchmark", 0) != 2 &&
+            CVarGetInteger("gExperimentalHopBenchmark", 0) != 1 ? A_BUTTON : 0;
+        if (CVarGetInteger("gExperimentalHopBenchmark", 0) && gRaceState == RACE_IN_PROGRESS &&
+            gCourseTimer >= 1.5f && gCourseTimer < 1.6f) gControllerPads[index].button |= R_TRIG;
+    }
 
     if (sIsController1Unplugged) {
         return;
@@ -476,10 +523,12 @@ void rendering_init(void) {
     exec_display_list(&gGfxPool->spTask);
     sRenderingFramebuffer++;
     gGlobalTimer++;
+    sNativePresentationCounter = (u32) gGlobalTimer;
 }
 
 void config_gfx_pool(void) {
-    gGfxPool = &gGfxPools[gGlobalTimer & 1];
+    const u32 poolFrame = GameEngine_IsExperimentalNativePresentation() ? sNativePresentationCounter : (u32) gGlobalTimer;
+    gGfxPool = &gGfxPools[poolFrame & 1];
     gDisplayListHead = gGfxPool->gfxPool;
     gGfxSPTask = &gGfxPool->spTask;
 }
@@ -491,11 +540,13 @@ void config_gfx_pool(void) {
  * Selects the next framebuffer to be rendered and displayed.
  */
 void display_and_vsync(void) {
+#ifdef TARGET_N64
     profiler_log_thread5_time(BEFORE_DISPLAY_LISTS);
+#endif
     // osRecvMesg(&gGfxVblankQueue, &gMainReceivedMesg, OS_MESG_BLOCK);
     exec_display_list(&gGfxPool->spTask);
-    profiler_log_thread5_time(AFTER_DISPLAY_LISTS);
 #ifdef TARGET_N64
+    profiler_log_thread5_time(AFTER_DISPLAY_LISTS);
     osRecvMesg(&gGameVblankQueue, &gMainReceivedMesg, OS_MESG_BLOCK);
 #endif
     osViSwapBuffer((void*) PHYSICAL_TO_VIRTUAL(gPhysicalFramebuffers[sRenderedFramebuffer]));
@@ -509,8 +560,17 @@ void display_and_vsync(void) {
     if (++sRenderingFramebuffer == 3) {
         sRenderingFramebuffer = 0;
     }
-    if (gTickVisuals) {
-        gGlobalTimer++;
+    if (GameEngine_IsExperimentalNativePresentation()) {
+        ++sNativePresentationCounter;
+        if (!sWasNativeVisual) sNativeVisualTicks = 0;
+        for (uint32_t i = 0; i < gNativeSimulationLegacyTicks; ++i) {
+            if (((++sNativeVisualTicks) & 1) && gTickVisuals) ++gGlobalTimer;
+        }
+        sWasNativeVisual = 1;
+    } else {
+        if (gTickVisuals) gGlobalTimer++;
+        sNativePresentationCounter = (u32) gGlobalTimer;
+        sWasNativeVisual = 0;
     }
 }
 
@@ -656,14 +716,34 @@ void display_debug_info(void) {
 }
 
 void process_game_tick(void) {
-    gTickCounter += 1;
+    const int nativeFrame = GameEngine_IsExperimentalNativeRace();
+    const uint32_t legacyTicks = nativeFrame ? gNativeSimulationLegacyTicks : 1;
+    const size_t previousTickCounter = gTickCounter;
+    gTickCounter += legacyTicks;
 
     if (Editor_IsPaused() == false) {
         LocalMP_UpdateAfk();
         if (D_8015011E) {
-            gCourseTimer += TRACK_TIMER_ITER;
+            // Default scale preserves the original fixed-step arithmetic.
+            // The experimental fractional path measures elapsed race time.
+            if (gNativeSimulationTickScale == 1.0f) {
+                gCourseTimer += TRACK_TIMER_ITER;
+            } else {
+                gCourseTimer += TRACK_TIMER_ITER * gNativeSimulationTickScale;
+            }
         }
-        func_802909F0();
+        // Kart-to-kart collision applies an immediate impulse and overlap
+        // correction. Reapplying those at every presentation frame changes
+        // the contact response, so keep checks on their original tick rate.
+        for (uint32_t tick = 0; tick < legacyTicks; ++tick) {
+            func_802909F0();
+            if (CVarGetInteger("gExperimentalCollisionBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+                static unsigned checkedTicks = 0;
+                if (++checkedTicks % 60 == 0) {
+                    printf("COLLISION_GATE ticks=%u t=%.4f\n", checkedTicks, gCourseTimer);
+                }
+            }
+        }
         evaluate_collision_for_players_and_actors();
         handle_a_press_for_all_players_during_race();
     }
@@ -677,14 +757,45 @@ void process_game_tick(void) {
     
     func_80028F70(); // Player controller
 
-    func_8028F474();
-    func_80059AC8();
-    update_course_actors();
-    CM_TickActors();
-    if (gTickCounter & 1) { // Only run once per game loop
-        CM_TickActors60fps();
+    if (!nativeFrame) {
+        PerfDiagMark(2);
+        func_8028F474();
+        PerfDiagMark(6);
+    } else {
+        // Path tracking, CPU decisions and traffic updates contain many
+        // integer counters. Keep their original cadence until their own
+        // time-based conversion is complete. gPreviousPlayerZ in path
+        // tracking retains the position from its previous invocation.
+        const f32 savedScale = gNativeSimulationTickScale;
+        gNativeSimulationTickScale = 1.0f;
+        for (uint32_t tick = 0; tick < legacyTicks; ++tick) func_8028F474();
+        gNativeSimulationTickScale = savedScale;
     }
-    CM_TickTrack();
+    if (!nativeFrame) {
+        func_80059AC8();
+        update_course_actors();
+        CM_TickActors();
+        if (gTickCounter & 1) { // Only run once per game loop
+            CM_TickActors60fps();
+        }
+        CM_TickTrack();
+    } else {
+        // Legacy actor and effect state machines still count fixed 60 Hz
+        // steps. Advance them at crossed boundaries while player movement is
+        // being converted to the native simulation step. Keep ordering when
+        // a long frame crosses more than one boundary.
+        for (uint32_t tick = 0; tick < legacyTicks; ++tick) {
+            gNativeSimulationLegacyTicks = 1;
+            func_80059AC8();
+            update_course_actors();
+            CM_TickActors();
+            if ((previousTickCounter + tick + 1) & 1) CM_TickActors60fps();
+            CM_TickTrack();
+        }
+        gNativeSimulationLegacyTicks = legacyTicks;
+        // Item-button edges must not disappear on frames with no 60 Hz tick.
+        if (legacyTicks == 0) check_player_use_item();
+    }
     if (CM_IsTourEnabled() == false) {
         func_8028FCBC();
     }
@@ -714,18 +825,62 @@ void race_logic_loop(void) {
         sNumVBlanks = 1;
     }
 
-    func_802A4EF4();
+    if (GameEngine_IsExperimentalNativeRace()) {
+        // Camera effect state was updated once per 30 Hz game frame.
+        for (uint32_t tick = 0; tick < gNativeSimulationLegacyTicks; ++tick)
+            if ((gTickCounter + tick + 1) & 1) func_802A4EF4();
+    } else {
+        func_802A4EF4();
+    }
 
-    if (gModeSelection == TIME_TRIALS && !LocalMP_IsActive()) {
+    if (gModeSelection == TIME_TRIALS && !LocalMP_IsActive() && !gQuickTimeTrial) {
         replays_loop();
     }
 
     if (gIsGamePaused == false) {
-        for (size_t i = 0; i < (size_t) gTickLogic; i++) {
+        // The grid intro, setup and Lakitu countdown are logic-driven too.
+        // Include them so Tab uses the same tick count before and after GO.
+        const s32 logicTicks = GameEngine_IsExperimentalNativeRace() ? 1 :
+            !Editor_IsPaused() && gRaceState >= RACE_INIT && gRaceState < RACE_FINISHED
+            ? GameEngine_GetLogicTicksPerFrame(gTickLogic) : gTickLogic;
+        u16 savedEdges[MAX_HUMAN_PLAYERS][4];
+        if (logicTicks > gTickLogic) {
+            for (s32 player = 0; player < MAX_HUMAN_PLAYERS; ++player) {
+                savedEdges[player][0] = gControllers[player].buttonPressed;
+                savedEdges[player][1] = gControllers[player].buttonDepressed;
+                savedEdges[player][2] = gControllers[player].stickPressed;
+                savedEdges[player][3] = gControllers[player].stickDepressed;
+            }
+        }
+        for (s32 i = 0; i < logicTicks; i++) {
+            // Extra ticks retain held buttons/sticks, but must not repeat a
+            // physical press/release edge as though it were another input.
+            if (i >= gTickLogic) {
+                for (s32 player = 0; player < MAX_HUMAN_PLAYERS; ++player) {
+                    gControllers[player].buttonPressed = gControllers[player].buttonDepressed = 0;
+                    gControllers[player].stickPressed = gControllers[player].stickDepressed = 0;
+                }
+            }
             process_game_tick();
+            if (gIsGamePaused || gGamestate != RACING || gIsInQuitToMenuTransition ||
+                (logicTicks != gTickLogic && gRaceState == RACE_FINISHED)) break;
+        }
+        if (logicTicks > gTickLogic) {
+            for (s32 player = 0; player < MAX_HUMAN_PLAYERS; ++player) {
+                gControllers[player].buttonPressed = savedEdges[player][0];
+                gControllers[player].buttonDepressed = savedEdges[player][1];
+                gControllers[player].stickPressed = savedEdges[player][2];
+                gControllers[player].stickDepressed = savedEdges[player][3];
+            }
         }
         if (Editor_IsPaused() == false) {
-            func_80022744();
+            if (GameEngine_IsExperimentalNativeRace()) {
+                // Kart animation, particles and random hop effects were
+                // updated once per 30 Hz game frame, not per display frame.
+                for (uint32_t step = 0; step < gNativeVisualSteps; ++step) func_80022744();
+            } else {
+                func_80022744();
+            }
         }
     }
     func_8005A070();
@@ -1105,6 +1260,7 @@ void func_80002658(void) {
  *
  */
 void update_gamestate(void) {
+    if (gGamestate != RACING) gQuickTimeTrial = false;
     switch (gGamestate) {
         case START_MENU_FROM_QUIT:
             func_80002658();
@@ -1188,17 +1344,417 @@ void thread5_iteration(void) {
         gGamestate = gGamestateNext;
         update_gamestate();
     }
+    // Internal, disabled-by-default prototype. Only the race loop opts in;
+    // menus, cutscenes and many race systems still require conversion.
+    static NativeFrameClock nativeFrameClock = { 0 };
+    static int wasNativeFrame = 0;
+    const int nativeFrame = GameEngine_IsExperimentalNativePresentation();
+    static uint64_t nativeElapsedLegacyTicks = 0;
+    if (nativeFrame) {
+        if (!wasNativeFrame) {
+            NativeFrameClock_Reset(&nativeFrameClock);
+            nativeElapsedLegacyTicks = 0;
+        }
+        const uint64_t rawElapsedNs = (uint64_t) (sNativeElapsedTime * 1000000000.0);
+        const uint64_t elapsedNs = NativeFrameClock_BoundedElapsed(&nativeFrameClock, rawElapsedNs,
+                                                                   UINT64_C(1000000000) / 15);
+        NativeFrameStep step = NativeFrameClock_Advance(&nativeFrameClock, elapsedNs);
+        gNativeSimulationTickScale = GameEngine_IsExperimentalNativeRace() ? (f32) step.legacy_tick_fraction : 1.0f;
+        gNativeSimulationLegacyTicks = (uint32_t) step.legacy_ticks;
+        gNativeVisualSteps = (uint32_t) ((nativeElapsedLegacyTicks + step.legacy_ticks + 1) / 2 -
+                                        (nativeElapsedLegacyTicks + 1) / 2);
+        nativeElapsedLegacyTicks += step.legacy_ticks;
+        gNativeVisualPhase = (float) (((nativeElapsedLegacyTicks + 1) % 2 +
+            (double) nativeFrameClock.legacy_phase / NATIVE_FRAME_NANOSECONDS_PER_SECOND) * 0.5);
+    } else {
+        gNativeSimulationTickScale = 1.0f;
+        gNativeSimulationLegacyTicks = 1;
+        gNativeVisualSteps = 1;
+        gNativeVisualPhase = 0.0f;
+    }
+    wasNativeFrame = nativeFrame;
+    if (CVarGetInteger("gExperimentalMenuBenchmark", 0) &&
+        gGamestate >= START_MENU_FROM_QUIT && gGamestate <= COURSE_SELECT_MENU_FROM_QUIT) {
+        static f64 menuBenchElapsed = 0.0;
+        static s32 menuBenchFrames = 0;
+        menuBenchElapsed += gDeltaTime;
+        ++menuBenchFrames;
+        if (menuBenchElapsed >= 0.5) {
+            printf("MENU_BENCH fps=%.1f menu=%d visualTick=%d flashTick=%d selection=%d players=%d\n",
+                   menuBenchFrames / menuBenchElapsed, gMenuSelection, gGlobalTimer, gCycleFlashMenu,
+                   gMainMenuSelection, gPlayerCountSelection1);
+            fflush(stdout);
+            menuBenchElapsed = 0.0;
+            menuBenchFrames = 0;
+        }
+    }
+    if (CVarGetInteger("gExperimentalNativeBenchmark", 0) && gGamestate == RACING) {
+        static f64 benchElapsed = 0.0;
+        static s32 benchFrames = 0;
+        static int benchSeeded = 0;
+        static int effectTestState = 0;
+        static f32 effectTestStart = 0.0f;
+        static int effectTestSampled = 0;
+        static int airTestState = 0;
+        static int airTestMaxTicks = 0;
+        static f32 airTestLandingTime = 0.0f;
+        if (CVarGetInteger("gExperimentalHopBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            static int hopTestState = 0;
+            static f32 initialY, peakY, peakHop;
+            Player* p = &gPlayers[0];
+            if (!hopTestState && gCourseTimer >= 1.4f) {
+                initialY = peakY = p->pos[1]; peakHop = 0.0f; hopTestState = 1;
+            }
+            if (hopTestState == 1) {
+                if (p->pos[1] > peakY) peakY = p->pos[1];
+                if (p->kartHopVelocity > peakHop) peakHop = p->kartHopVelocity;
+                if (gCourseTimer >= 2.4f) {
+                    printf("HOP_BENCH initialY=%.4f peakY=%.4f peakHop=%.4f finalY=%.4f effects=%x\n",
+                           initialY, peakY, peakHop, p->pos[1], p->effects);
+                    hopTestState = 2;
+                }
+            }
+        }
+        if (CVarGetInteger("gExperimentalAirBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            Player* p = &gPlayers[0];
+            if (!airTestState && gCourseTimer >= 1.5f) {
+                if (CVarGetInteger("gExperimentalAirBenchmark", 0) == 2) {
+                    // Fixed Choco Mountain coordinates make both isolated
+                    // runs begin the probe at the same height and location.
+                    p->pos[0] = -26.0f;
+                    p->pos[1] = 55.35f + CVarGetInteger("gExperimentalAirDropHeight", 30);
+                    p->pos[2] = -380.0f;
+                    p->velocity[0] = p->velocity[2] = 0.0f;
+                    p->currentSpeed = p->kartPropulsionStrength = 0.0f;
+                } else {
+                    p->pos[1] += 30.0f;
+                }
+                for (int axis = 0; axis < 3; ++axis) p->oldPos[axis] = p->pos[axis];
+                p->velocity[1] = 0.0f;
+                p->unk_0C2 = 0;
+                airTestState = 1;
+                printf("AIR_BENCH start=%.4f pos=(%.4f,%.4f,%.4f) velocity=(%.4f,%.4f,%.4f)\n",
+                       gCourseTimer, p->pos[0], p->pos[1], p->pos[2], p->velocity[0], p->velocity[1], p->velocity[2]);
+            } else if (airTestState == 1 && (p->effects & 8)) {
+                airTestState = 2;
+            }
+            if (airTestState == 2) {
+                if (p->unk_0C2 > airTestMaxTicks) airTestMaxTicks = p->unk_0C2;
+                if (CVarGetInteger("gExperimentalAirBenchmark", 0) == 2 && gNativeSimulationLegacyTicks) {
+                    printf("AIR_SAMPLE t=%.4f y=%.4f vy=%.4f groundDistance=%.4f airTicks=%d effects=%x\n",
+                           gCourseTimer, p->pos[1], p->velocity[1], p->collision.surfaceDistance[2], p->unk_0C2, p->effects);
+                }
+                if (!(p->effects & 8)) {
+                    airTestState = 3;
+                    airTestLandingTime = gCourseTimer;
+                    printf("AIR_BENCH land=%.4f y=%.4f vy=%.4f groundDistance=%.4f maxTicks=%d speed=%.4f\n",
+                           gCourseTimer, p->pos[1], p->velocity[1], p->collision.surfaceDistance[2], airTestMaxTicks, p->speed);
+                }
+            }
+            if (airTestState == 3 && gCourseTimer - airTestLandingTime < 0.5f && gNativeSimulationLegacyTicks) {
+                printf("AIR_RECOVERY t=%.4f y=%.4f vy=%.4f groundDistance=%.4f effects=%x\n",
+                       gCourseTimer, p->pos[1], p->velocity[1], p->collision.surfaceDistance[2], p->effects);
+            }
+        }
+        Player* effectTestPlayer = &gPlayers[NUM_RACERS - 1];
+        if (CVarGetInteger("gExperimentalAccelerationBoundaryBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            static int boundaryDone = 0;
+            if (!boundaryDone && gCourseTimer >= 1.0f) {
+                const f32 savedScale = gNativeSimulationTickScale;
+                *effectTestPlayer = gPlayers[0];
+                effectTestPlayer->type = 0;
+                effectTestPlayer->topSpeed = 320.0f;
+                const int benchmarkMode = CVarGetInteger("gExperimentalAccelerationBoundaryBenchmark", 0);
+                const int alternate = benchmarkMode >= 2;
+                const int characterCount = benchmarkMode >= 3 ? 8 : 1;
+                const int firstCharacter = effectTestPlayer->characterId;
+                for (int character = 0; character < characterCount; ++character) {
+                effectTestPlayer->characterId = benchmarkMode >= 3 ? character : firstCharacter;
+                if (benchmarkMode >= 4) effectTestPlayer->topSpeed = gTopSpeedTable[gCCSelection][character];
+                for (int band = 1; band <= 10; ++band) {
+                    const f32 initial = effectTestPlayer->topSpeed * band / 10.0f - (band == 10 ? 0.1f : 0.5f);
+                    effectTestPlayer->currentSpeed = initial;
+                    gNativeSimulationTickScale = 1.0f;
+                    if (alternate) player_accelerate_alternative(effectTestPlayer);
+                    else player_accelerate(effectTestPlayer);
+                    const f32 legacy = effectTestPlayer->currentSpeed;
+                    effectTestPlayer->currentSpeed = initial;
+                    gNativeSimulationTickScale = 0.25f;
+                    for (int i = 0; i < 4; ++i) {
+                        if (alternate) player_accelerate_alternative(effectTestPlayer);
+                        else player_accelerate(effectTestPlayer);
+                    }
+                    printf("ACCEL_BOUNDARY band=%d start=%.2f legacy=%.5f fractional=%.5f character=%d\n",
+                           band, initial, legacy, effectTestPlayer->currentSpeed, effectTestPlayer->characterId);
+                }
+                }
+                gNativeSimulationTickScale = savedScale;
+                boundaryDone = 1;
+            }
+        }
+        if (CVarGetInteger("gExperimentalTreeContactBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            static int treeTestState = 0;
+            static f32 treeTestStart = 0.0f;
+            static struct Actor* treeTestActor = NULL;
+            const int contactTestMode = CVarGetInteger("gExperimentalTreeContactBenchmark", 0);
+            if (!treeTestState && gCourseTimer >= 1.0f) {
+                for (size_t i = 0; i < CM_GetActorSize(); ++i) {
+                    struct Actor* actor = CM_GetActor(i);
+                    if (actor->type == ACTOR_TREE_MARIO_RACEWAY || actor->type == ACTOR_TREE_YOSHI_VALLEY ||
+                        actor->type == ACTOR_TREE_ROYAL_RACEWAY || actor->type == ACTOR_TREE_MOO_MOO_FARM ||
+                        actor->type == ACTOR_PALM_TREE || actor->type == ACTOR_TREE_FRAPPE_SNOWLAND) {
+                        treeTestActor = actor;
+                        break;
+                    }
+                }
+                if (!treeTestActor) { printf("TREE_BENCH no requested actor found (mode=%d)\n", contactTestMode); treeTestState = 2; }
+                else {
+                    *effectTestPlayer = gPlayers[0];
+                    effectTestPlayer->type = contactTestMode >= 2 ? PLAYER_HUMAN : 0;
+                    effectTestPlayer->speed = 0;
+                    treeTestStart = gCourseTimer;
+                    treeTestState = 1;
+                }
+            }
+            if (treeTestState == 1 && gCourseTimer - treeTestStart < 1.0f) {
+                effectTestPlayer->pos[0] = treeTestActor->pos[0] + 1.0f;
+                effectTestPlayer->pos[1] = treeTestActor->pos[1] + 1.0f;
+                effectTestPlayer->pos[2] = treeTestActor->pos[2];
+                effectTestPlayer->velocity[0] = effectTestPlayer->velocity[2] = 0;
+                effectTestPlayer->effects = 0;
+                if (contactTestMode == 2) collision_mario_sign(effectTestPlayer, treeTestActor);
+                else if (contactTestMode == 3) collision_piranha_plant(effectTestPlayer, (struct PiranhaPlant*) treeTestActor);
+                else collision_tree(effectTestPlayer, treeTestActor);
+            } else if (treeTestState == 1) {
+                printf("TREE_BENCH done elapsed=%.4f\n", gCourseTimer - treeTestStart);
+                treeTestState = 2;
+            }
+        }
+        if (CVarGetInteger("gExperimentalActorContactBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            static int state = 0;
+            static f32 startTime = 0.0f;
+            static unsigned contacts = 0;
+            static unsigned boundaryContacts = 0;
+            const int contactMode = CVarGetInteger("gExperimentalActorContactBenchmark", 0);
+            Player* testPlayer = &gPlayers[NUM_RACERS - 1];
+            if (!state && gCourseTimer >= 1.0f) {
+                *testPlayer = gPlayers[0];
+                testPlayer->type = 0;
+                testPlayer->boundingBoxSize = 10.0f;
+                testPlayer->velocity[0] = 1.0f;
+                testPlayer->velocity[1] = testPlayer->velocity[2] = 0.0f;
+                startTime = gCourseTimer;
+                state = 1;
+            }
+            if (state == 1 && gCourseTimer - startTime < 1.0f) {
+                const int repeats = GameEngine_IsExperimentalNativeRace() ? 1 : gTickLogic;
+                const f32 elapsed = gCourseTimer - startTime;
+                const f32 testSpeed = contactMode == 3 ? 600.0f : contactMode == 4 ? 2400.0f : 12500.0f;
+                Vec3f obstacle = { contactMode >= 2 ? (elapsed - 0.1f) * testSpeed : 5.0f, 0.0f, 0.0f };
+                for (int i = 0; i < repeats; ++i) {
+                    testPlayer->pos[0] = testPlayer->pos[1] = testPlayer->pos[2] = 0.0f;
+                    testPlayer->effects = 0;
+                    const int hit = query_and_resolve_collision_player_actor(testPlayer, obstacle, 10.0f, 10.0f, 0.8f) != 0;
+                    contacts += hit;
+                    if (!GameEngine_IsExperimentalNativeRace() || gNativeSimulationLegacyTicks) boundaryContacts += hit;
+                }
+            } else if (state == 1) {
+                printf("ACTOR_CONTACT_BENCH mode=%d duration=%.4f contacts=%u boundaryContacts=%u velocity=%.5f position=%.5f\n",
+                       contactMode, gCourseTimer - startTime, contacts, boundaryContacts, testPlayer->velocity[0], testPlayer->pos[0]);
+                state = 2;
+            }
+        }
+        if (CVarGetInteger("gExperimentalCollisionBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            static int initialized = 0;
+            static unsigned contactTicks = 0;
+            Player* a = &gPlayers[NUM_RACERS - 2];
+            Player* b = &gPlayers[NUM_RACERS - 1];
+            if (!initialized && gCourseTimer >= 1.0f) {
+                *a = *b = gPlayers[0];
+                a->type = b->type = 0;
+                a->characterId = b->characterId = 0;
+                a->boundingBoxSize = b->boundingBoxSize = 10.0f;
+                a->velocity[0] = 1.0f; b->velocity[0] = -1.0f;
+                a->velocity[1] = a->velocity[2] = b->velocity[1] = b->velocity[2] = 0.0f;
+                initialized = 1;
+            }
+            if (initialized && contactTicks < 60) {
+                const uint32_t repeats = GameEngine_IsExperimentalNativeRace() ? gNativeSimulationLegacyTicks : gTickLogic;
+                for (uint32_t step = 0; step < repeats && contactTicks < 60; ++step) {
+                    // Recreate a persistent overlap to make repeated impulses
+                    // visible while leaving all active race karts untouched.
+                    a->pos[0] = 0.0f; b->pos[0] = 5.0f;
+                    a->pos[1] = b->pos[1] = a->pos[2] = b->pos[2] = 0.0f;
+                    a->effects = b->effects = 0;
+                    func_802903D8(a, b);
+                    if (++contactTicks == 60) {
+                        printf("COLLISION_BENCH ticks=%u t=%.4f velocity=(%.6f,%.6f) pos=(%.6f,%.6f)\n",
+                               contactTicks, gCourseTimer, a->velocity[0], b->velocity[0], a->pos[0], b->pos[0]);
+                    }
+                }
+            }
+        }
+        if (CVarGetInteger("gExperimentalEffectBenchmark", 0) && gRaceState == RACE_IN_PROGRESS) {
+            const int effectTest = CVarGetInteger("gExperimentalEffectBenchmark", 0);
+            const u32 effectMask = effectTest == 2 ? 0x80000 : effectTest == 3 ? 0x800000 :
+                                   (effectTest == 4 || effectTest == 18) ? LIGHTNING_EFFECT : effectTest == 5 ? BOOST_EFFECT :
+                                   effectTest == 6 ? BOOST_RAMP_ASPHALT_EFFECT :
+                                   effectTest == 7 ? BOOST_RAMP_WOOD_EFFECT :
+                                   effectTest == 8 ? HIT_BY_ITEM_EFFECT : effectTest == 9 ? 0x01000000 :
+                                   effectTest == 10 ? HIT_EFFECT : effectTest == 11 ? 0x40 :
+                                   effectTest == 12 ? 0x80 : effectTest == 13 ? 0x400 :
+                                   effectTest == 14 ? STAR_EFFECT : effectTest == 15 ? BOO_EFFECT :
+                                   (effectTest == 16 || effectTest == 17) ? 0 : 0x10000;
+            if (!effectTestState && gCourseTimer >= 1.0f) {
+                *effectTestPlayer = gPlayers[0];
+                effectTestPlayer->type &= ~PLAYER_EXISTS;
+                effectTestPlayer->effects = effectMask | ((effectTest == 8 || effectTest == 9) ? 8 : 0);
+                if (effectTest == 18) effectTestPlayer->effects |= 0x20000;
+                effectTestPlayer->triggers = 0;
+                if (effectTest == 17) {
+                    effectTestPlayer->triggers = LOSE_BATTLE_EFFECT;
+                    effectTestPlayer->alpha = 255;
+                }
+                effectTestPlayer->kartProps = 0;
+                effectTestPlayer->lakituProps = 0;
+                if (effectTest == 16) {
+                    effectTestPlayer->lakituProps = HELD_BY_LAKITU | LAKITU_SCENE;
+                    effectTestPlayer->unk_222 = 4;
+                    effectTestPlayer->unk_0C8 = 0;
+                    effectTestPlayer->unk_074 = effectTestPlayer->pos[1] - effectTestPlayer->boundingBoxSize + 2.0f;
+                }
+                effectTestPlayer->unk_0A8 = 0;
+                effectTestPlayer->unk_236 = 1;
+                effectTestPlayer->unk_0E0 = 0;
+                effectTestPlayer->unk_0AE = effectTestPlayer->rotation[1];
+                effectTestPlayer->unk_0B2 = effectTest == 3 ? 4 :
+                                             (effectTest == 11 || effectTest == 12 || effectTest == 18) ? 2 : 1;
+                effectTestPlayer->unk_0B0 = effectTest == 4 ? 0x190 : 0;
+                if (effectTest >= 11) effectTestPlayer->currentSpeed = 150.0f;
+                if (effectTest == 14 || effectTest == 15) {
+                    effectTestPlayer->type &= ~PLAYER_HUMAN;
+                    effectTestPlayer->alpha = 255;
+                    gPlayerOtherScreensAlpha[NUM_RACERS - 1] = 255;
+                    gPlayerStarEffectStartTime[NUM_RACERS - 1] = (s32) gCourseTimer - 8;
+                    gPlayerBooEffectStartTime[NUM_RACERS - 1] = (s32) gCourseTimer - 5;
+                }
+                if (effectTest == 10) {
+                    effectTestPlayer->unk_238 = 0;
+                    effectTestPlayer->unk_046 &= ~0x80;
+                    effectTestPlayer->unk_D98 = 1;
+                    effectTestPlayer->unk_D9C = 0.0f;
+                    effectTestPlayer->unk_DA0 = 65.0f;
+                    effectTestPlayer->collision.surfaceDistance[2] = 0.0f;
+                    D_8018D990[NUM_RACERS - 1] = 0;
+                }
+                if (effectTest >= 5) {
+                    effectTestPlayer->boostPower = 100.0f;
+                    effectTestPlayer->boostTimer = 12;
+                    effectTestPlayer->surfaceType = effectTest == 6 ? BOOST_RAMP_ASPHALT :
+                                                    effectTest == 7 ? BOOST_RAMP_WOOD : 0;
+                    effectTestPlayer->unk_256 = 0;
+                }
+                D_8018D920[NUM_RACERS - 1] = 0;
+                effectTestState = 1;
+                effectTestStart = gCourseTimer;
+                printf("EFFECT_BENCH effect=%x start=%.4f\n", effectMask, gCourseTimer);
+            }
+            if (effectTestState == 1) {
+                if (effectTest == 18 && !effectTestSampled && !(effectTestPlayer->effects & 0x20000)) {
+                    effectTestSampled = 1;
+                    printf("EFFECT_BENCH effect=%x spinEnd=%.4f speed=%.3f yaw=%d\n", effectMask,
+                           gCourseTimer, effectTestPlayer->currentSpeed, effectTestPlayer->rotation[1]);
+                }
+                if (effectTest == 15 && !effectTestSampled && gCourseTimer - effectTestStart >= 0.5f) {
+                    effectTestSampled = 1;
+                    printf("EFFECT_BENCH effect=%x sample=%.4f alpha=%d otherAlpha=%d\n", effectMask,
+                           gCourseTimer - effectTestStart, effectTestPlayer->alpha,
+                           gPlayerOtherScreensAlpha[NUM_RACERS - 1]);
+                }
+                if (effectTest >= 6 && effectTest <= 7) {
+                    if (!effectTestSampled && gCourseTimer - effectTestStart >= 0.5f) {
+                        effectTestSampled = 1;
+                        printf("EFFECT_BENCH effect=%x sample=%.4f power=%.4f\n", effectMask,
+                               gCourseTimer - effectTestStart, effectTestPlayer->boostPower);
+                    }
+                    if (gCourseTimer - effectTestStart >= 1.0f) effectTestPlayer->surfaceType = 0;
+                }
+                const int repeats = GameEngine_IsExperimentalNativeRace() ? 1 : gTickLogic;
+                for (int step = 0; step < repeats; ++step) apply_effect(effectTestPlayer, NUM_RACERS - 1, 0);
+                if (effectTest == 17 ? !(effectTestPlayer->triggers & (LOSE_BATTLE_EFFECT | BECOME_BOMB_EFFECT)) :
+                    effectTest == 16 ? !(effectTestPlayer->lakituProps & HELD_BY_LAKITU) :
+                                       !(effectTestPlayer->effects & effectMask)) {
+                    effectTestState = 2;
+                    printf("EFFECT_BENCH effect=%x end=%.4f yaw=%d speed=%.3f gravity=%.3f size=%.3f y=%.3f alpha=%d otherAlpha=%d\n", effectMask,
+                           gCourseTimer, effectTestPlayer->rotation[1], effectTestPlayer->currentSpeed,
+                           effectTestPlayer->kartGravity, effectTestPlayer->size, effectTestPlayer->pos[1],
+                           effectTestPlayer->alpha, gPlayerOtherScreensAlpha[NUM_RACERS - 1]);
+                }
+            }
+        }
+        if (!benchSeeded && gRaceState == RACE_IN_PROGRESS) {
+            gRandomSeed16 = 0x1234;
+            if (CVarGetInteger("gExperimentalBenchmarkSolo", 0)) {
+                // Isolated physics comparison: remove competitors after GO so
+                // player contact cannot affect the measured trajectory.
+                for (s32 i = 1; i < LocalMP_RacerCount(); ++i) gPlayers[i].type &= ~PLAYER_EXISTS;
+            }
+            benchSeeded = 1;
+        }
+        benchElapsed += gDeltaTime;
+        ++benchFrames;
+        if (benchElapsed >= 0.25) {
+            printf("NATIVE_BENCH fps=%.1f raceState=%d courseTime=%.3f player=(%.2f,%.2f,%.2f) speed=%.3f rng=%u visualTick=%d objectTick=%d\n",
+                   benchFrames / benchElapsed, gRaceState, gCourseTimer,
+                   gPlayers[0].pos[0], gPlayers[0].pos[1], gPlayers[0].pos[2], gPlayers[0].speed, gRandomSeed16, gGlobalTimer, D_8018D400);
+            if (CVarGetInteger("gExperimentalReplayGhostTest", 0) == 3) {
+                const Player* ghost = &gPlayers[1];
+                printf("REPLAY_GHOST_MOTION t=%.3f type=%04x pos=(%.3f,%.3f,%.3f) speed=%.4f\n",
+                       gCourseTimer, (unsigned) ghost->type, ghost->pos[0], ghost->pos[1], ghost->pos[2], ghost->speed);
+            }
+            if (CVarGetInteger("gExperimentalBenchmarkSolo", 0)) {
+                const Player* p = &gPlayers[0];
+                printf("NATIVE_WALL t=%.3f v=(%.4f,%.4f,%.4f) current=%.4f propulsion=%.4f yaw=%d steer=%d turn=%d turnRate=%u turnDamp=%.3f wall=(%.4f,%.4f) recovery=(%d,%u) friction=%.3f airTicks=%d effects=%x\n",
+                       gCourseTimer, p->velocity[0], p->velocity[1], p->velocity[2], p->currentSpeed,
+                       p->kartPropulsionStrength, p->rotation[1], p->unk_07C >> 16, p->unk_078, p->unk_200, p->unk_090,
+                       p->collision.surfaceDistance[0],
+                       p->collision.surfaceDistance[1], p->unk_10C, p->unk_256, p->kartFriction, p->unk_0C2, p->effects);
+            }
+            fflush(stdout);
+            benchElapsed = 0.0;
+            benchFrames = 0;
+        }
+    }
+    if (CVarGetInteger("gExperimentalCreditsBenchmark", 0) && gGamestate == CREDITS_SEQUENCE) {
+        static f64 elapsed = 0.0;
+        static s32 frames = 0;
+        elapsed += gDeltaTime;
+        ++frames;
+        if (elapsed >= 0.5) {
+            Camera* camera = gScreenOneCtx->camera;
+            printf("CREDITS_BENCH fps=%.1f visualTick=%d camera=(%.2f,%.2f,%.2f) transition=%d\n",
+                   frames / elapsed, gGlobalTimer, camera->pos[0], camera->pos[1], camera->pos[2],
+                   gIsInQuitToMenuTransition);
+            fflush(stdout);
+            frames = 0;
+            elapsed = 0.0;
+        }
+    }
     profiler_log_thread5_time(THREAD5_START);
     config_gfx_pool();
     read_controllers();
     FB_CreateFramebuffers();
     clear_framebuffer(0); // Clear the framebuffer
+    PerfDiagMark(1);
     game_state_handler();
+    PerfDiagMark(5);
 
     // call_render_hook();
 
     end_master_display_list();
+    PerfDiagMark(3);
     display_and_vsync();
+    PerfDiagMark(7);
 }
 
 /**

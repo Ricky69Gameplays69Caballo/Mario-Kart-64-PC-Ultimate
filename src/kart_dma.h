@@ -6,9 +6,9 @@
 
 /* Function Prototypes */
 
-void load_kart_texture(Player*, s8, s8, s8, s8);
-void load_kart_texture_non_blocking(Player*, s8, s8, s8, s8);
-void load_kart_palette(Player*, s8, s8, s8);
+void load_kart_texture(Player*, s16, s8, s8, s8);
+void load_kart_texture_non_blocking(Player*, s16, s8, s8, s8);
+void load_kart_palette(Player*, s16, s8, s8);
 void load_player_data(Player*, s32, void*, u16);
 void load_wheel_palette_non_blocking(Player*, const char*, void*, u16);
 

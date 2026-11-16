@@ -13,7 +13,7 @@ typedef struct {
     /* 0x08 */ s32 actorTimer;
     /* 0x0C */ u8 unk[16]; // 10 bytes
     /* 0x1C */ s8 unk1C;
-    /* 0x1D */ s8 unk1D;
+    /* 0x1D */ u8 unk1D; // Zero-based cup place
     /* 0x1E */ s8 unk1E; // gCharacterSelections
 } struct_D_802874D8;
 

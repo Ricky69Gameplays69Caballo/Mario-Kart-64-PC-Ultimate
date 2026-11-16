@@ -214,9 +214,9 @@ void KoopaTroopaBeach::SomeSounds() {
     func_800C9D80(D_8015F738, D_802B91C8, 0x51028001);
 }
 
-void KoopaTroopaBeach::WhatDoesThisDo(Player* player, int8_t playerId) {}
+void KoopaTroopaBeach::WhatDoesThisDo(Player* player, int16_t playerId) {}
 
-void KoopaTroopaBeach::WhatDoesThisDoAI(Player* player, int8_t playerId) {}
+void KoopaTroopaBeach::WhatDoesThisDoAI(Player* player, int16_t playerId) {}
 
 void KoopaTroopaBeach::Draw(ScreenContext* arg0) {
     gDPPipeSync(gDisplayListHead++);

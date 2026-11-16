@@ -8,6 +8,7 @@
 #include <macros.h>
 #include <segments.h>
 #include <common_structs.h>
+#include <stdio.h>
 #include "racing/math_util.h"
 #include "ceremony_and_credits.h"
 #include "code_800029B0.h"
@@ -24,6 +25,7 @@
 
 #include "port/Engine.h"
 #include "port/Game.h"
+#include "port/NativeFrameSpline.h"
 
 f32 D_802856B0 = 98.0f;
 f32 D_802856B4 = 12.0f;
@@ -48,6 +50,9 @@ f32 sCutsceneSplineSegmentProgress;
 s16 sCutsceneSplineSegment;
 s16 D_80287B1E;
 s8 D_80287B20;
+
+typedef struct { s16 segment; f32 progress; int valid; } CreditsSplineSample;
+static CreditsSplineSample sCreditsSplineSamples[2];
 
 void vec3f_set_dupe(Vec3f dest, f32 arg1, f32 arg2, f32 arg3) {
     dest[0] = arg1;
@@ -285,33 +290,67 @@ void evaluate_cubic_spline(f32 arg0, Vec3f point, f32* arg2, f32 controlPoints1[
  * @return 1 if the point has reached the end of the spline, when `progress` reaches 1.0 or greater, and
  * the 4th CutsceneSplinePoint in the current segment away from spline[splineSegment] has an index of -1.
  */
+// Read-only evaluation is separate from advancement so a camera can later
+// sample its path without changing the cutscene clock or firing events.
+static s32 evaluate_cinematic_spline_point(Vec3f point, f32* roll, struct struct_80283430 spline[],
+                                          s32 segment, f32 progress) {
+    Mat4 controlPoints;
+    if ((spline[segment].unk0 == -1) || (spline[segment + 1].unk0 == -1) || (spline[segment + 2].unk0 == -1)) {
+        return 0;
+    }
+    for (s32 i = 0; i < 4; i++) {
+        controlPoints[i][0] = spline[segment + i].unk6[0];
+        controlPoints[i][1] = spline[segment + i].unk6[1];
+        controlPoints[i][2] = spline[segment + i].unk6[2];
+        controlPoints[i][3] = spline[segment + i].unk4 * 256.0f;
+    }
+    evaluate_cubic_spline(progress, point, roll, controlPoints[0], controlPoints[1], controlPoints[2], controlPoints[3]);
+    return 1;
+}
+
 s32 move_point_along_spline(Vec3f point, f32* arg1, struct struct_80283430 spline[], s16* splineSegment,
                             f32* progress) {
     s32 finished = 0;
-    Mat4 controlPoints;
-    s32 i = 0;
     f32 u = *progress;
     f32 progressChange;
     f32 firstSpeed = 0;
     f32 secondSpeed = 0;
     s32 segment = *splineSegment;
 
-    if (*splineSegment < 0) {
-        u = 0;
+    if (*splineSegment < 0) u = 0;
+    if (!evaluate_cinematic_spline_point(point, arg1, spline, segment, u)) return 1;
+    if (gGamestate == CREDITS_SEQUENCE && CVarGetInteger("gExperimentalCreditsSplineSample", 0) &&
+        (spline == D_80287818 || spline == D_80287998) && segment >= 0 && segment <= 28) {
+        int index = spline == D_80287818 ? 0 : 1;
+        sCreditsSplineSamples[index] = (CreditsSplineSample){ (s16) segment, u, 1 };
     }
 
-    if ((spline[segment].unk0 == -1) || (spline[segment + 1].unk0 == -1) || (spline[segment + 2].unk0 == -1)) {
-        return 1;
+    // Diagnostic only: evaluate a fractional point on the current path
+    // without advancing the shared cursor or running cutscene events.
+    if (gGamestate == CREDITS_SEQUENCE && spline == D_80287818 && segment >= 0 &&
+        CVarGetInteger("gExperimentalCreditsBenchmark", 0)) {
+        static u32 sampleCount;
+        double partial = u;
+        // Both paths use the shared cursor; in these credits shots the
+        // second path supplies the timing for that cursor.
+        const struct struct_80283430* timing = D_80287998;
+        double first = timing[segment + 1].unk2 ? 1.0 / timing[segment + 1].unk2 : 0.0;
+        double second = timing[segment + 2].unk2 ? 1.0 / timing[segment + 2].unk2 : 0.0;
+#ifdef VERSION_EU
+        first *= 1.14999997;
+        second *= 1.14999997;
+#endif
+        double remaining = NativeFrameSpline_AdvanceSegment(&partial, first, second, 0.5);
+        if (++sampleCount % 60 == 0 && remaining == 0.0 && partial < 1.0) {
+            Vec3f midpoint;
+            f32 roll;
+            if (evaluate_cinematic_spline_point(midpoint, &roll, spline, segment, (f32) partial)) {
+                printf("CREDITS_SPLINE segment=%d start=%.6f half=%.6f point=(%.3f,%.3f,%.3f) halfPoint=(%.3f,%.3f,%.3f)\n",
+                       segment, u, partial, point[0], point[1], point[2], midpoint[0], midpoint[1], midpoint[2]);
+                fflush(stdout);
+            }
+        }
     }
-
-    for (i = 0; i < 4; i++) {
-        controlPoints[i][0] = spline[segment + i].unk6[0];
-        controlPoints[i][1] = spline[segment + i].unk6[1];
-        controlPoints[i][2] = spline[segment + i].unk6[2];
-        controlPoints[i][3] = spline[segment + i].unk4 * 256.0f;
-    }
-
-    evaluate_cubic_spline(u, point, arg1, controlPoints[0], controlPoints[1], controlPoints[2], controlPoints[3]);
 
     if (spline[*splineSegment + 1].unk2 != 0) {
         firstSpeed = 1.0f / spline[*splineSegment + 1].unk2;
@@ -338,6 +377,86 @@ s32 move_point_along_spline(Vec3f point, f32* arg1, struct struct_80283430 splin
         (*progress)--;
     }
     return finished;
+}
+
+int NativeCredits_SampleCamera(Camera* camera, float phase, Vec3f pos, Vec3f lookAt, Vec3f up) {
+    static u32 diagnosticCalls;
+    const int diagnose = CVarGetInteger("gExperimentalCreditsBenchmark", 0) && ++diagnosticCalls % 240 == 0;
+    if (!CVarGetInteger("gExperimentalCreditsSplineSample", 0) || phase <= 0.0f ||
+        !sCreditsSplineSamples[0].valid || !sCreditsSplineSamples[1].valid) {
+        if (diagnose) printf("CREDITS_SAMPLE_SKIP setup phase=%.3f valid=%d,%d mirror=%d\n", phase,
+                             sCreditsSplineSamples[0].valid, sCreditsSplineSamples[1].valid, gIsMirrorMode);
+        return 0;
+    }
+    Vec3f base[2], sampled[2];
+    f32 rollBase[2] = { 0 }, rollSampled[2] = { 0 };
+    for (int i = 0; i < 2; ++i) {
+        const s32 segment = sCreditsSplineSamples[i].segment;
+        s32 sampleSegment = segment;
+        struct struct_80283430* path = i == 0 ? D_80287818 : D_80287998;
+        double partial = sCreditsSplineSamples[i].progress;
+        double remaining = phase;
+        for (int crossing = 0; remaining > 0.0 && crossing < 32; ++crossing) {
+            if (sampleSegment < 0 || sampleSegment > 28 || path[sampleSegment + 3].unk0 == -1) return 0;
+            // Only handle shots where the first path does not itself advance
+            // the shared cursor. Other shots retain their original camera.
+            if (D_80287818[sampleSegment + 1].unk2 || D_80287818[sampleSegment + 2].unk2) {
+                if (diagnose) printf("CREDITS_SAMPLE_SKIP first-path-timing\n");
+                return 0;
+            }
+            double first = D_80287998[sampleSegment + 1].unk2 ? 1.0 / D_80287998[sampleSegment + 1].unk2 : 0.0;
+            double second = D_80287998[sampleSegment + 2].unk2 ? 1.0 / D_80287998[sampleSegment + 2].unk2 : 0.0;
+#ifdef VERSION_EU
+            first *= 1.14999997;
+            second *= 1.14999997;
+#endif
+            remaining = NativeFrameSpline_AdvanceSegment(&partial, first, second, remaining);
+            if (remaining > 0.0) { ++sampleSegment; partial = 0.0; }
+        }
+        if (remaining > 0.0) return 0;
+        if (!evaluate_cinematic_spline_point(base[i], &rollBase[i], path, segment, sCreditsSplineSamples[i].progress) ||
+            !evaluate_cinematic_spline_point(sampled[i], &rollSampled[i], path, sampleSegment, (f32) partial)) {
+            if (diagnose) printf("CREDITS_SAMPLE_SKIP path-or-roll path=%d baseRoll=%.3f sampleRoll=%.3f\n",
+                                 i, rollBase[i], rollSampled[i]);
+            return 0;
+        }
+    }
+    // Other cutscene effects can alter the camera after the spline call. If
+    // they did, do not replace their result with an incomplete path sample.
+    for (int axis = 0; axis < 3; ++axis) {
+        f32 expectedPos = (gIsMirrorMode && axis == 0) ? -base[0][axis] : base[0][axis];
+        f32 expectedTarget = (gIsMirrorMode && axis == 0) ? -base[1][axis] : base[1][axis];
+        if (fabsf(expectedPos - camera->pos[axis]) > 0.01f ||
+            fabsf(expectedTarget - camera->lookAt[axis]) > 0.01f) {
+            if (diagnose) printf("CREDITS_SAMPLE_SKIP transformed axis=%d posDiff=%.3f targetDiff=%.3f\n", axis,
+                                 expectedPos - camera->pos[axis], expectedTarget - camera->lookAt[axis]);
+            return 0;
+        }
+        pos[axis] = sampled[0][axis];
+        lookAt[axis] = sampled[1][axis];
+    }
+    f32 distance;
+    s16 pitch, heading;
+    Vec3f expectedUp;
+    calculate_distance_angle_y_and_angle_y_to_xz(base[0], base[1], &distance, &pitch, &heading);
+    if (pitch >= 0x3800 || pitch < -0x37FF) return 0;
+    f32 baseRoll = rollBase[1] < 0.0f ? rollBase[1] + 65536.0f : rollBase[1];
+    expectedUp[0] = sins(baseRoll) * coss(heading);
+    expectedUp[1] = coss(baseRoll);
+    expectedUp[2] = -sins(baseRoll) * sins(heading);
+    for (int axis = 0; axis < 3; ++axis) if (fabsf(expectedUp[axis] - camera->up[axis]) > 0.01f) return 0;
+    calculate_distance_angle_y_and_angle_y_to_xz(pos, lookAt, &distance, &pitch, &heading);
+    if (pitch >= 0x3800 || pitch < -0x37FF) return 0;
+    f32 sampledRoll = rollSampled[1] < 0.0f ? rollSampled[1] + 65536.0f : rollSampled[1];
+    up[0] = sins(sampledRoll) * coss(heading);
+    up[1] = coss(sampledRoll);
+    up[2] = -sins(sampledRoll) * sins(heading);
+    // Credits mirror the camera coordinates after computing the up vector.
+    if (gIsMirrorMode) {
+        pos[0] = -pos[0];
+        lookAt[0] = -lookAt[0];
+    }
+    return 1;
 }
 
 void func_80282BE4(struct struct_80283430* arg0, s8 arg1, u8 arg2, s8 arg3, Vec3s arg4, s32 arg5) {
@@ -586,6 +705,8 @@ s32 func_80283648(Camera* camera) {
     Vec3f lookAt;
     Vec3f up;
     CinematicCamera* cinematicCamera = &D_802876E0;
+
+    sCreditsSplineSamples[0].valid = sCreditsSplineSamples[1].valid = 0;
 
     cinematic_stub();
     vec3f_copy_return_dupe(pos, camera->pos);
@@ -1590,5 +1711,10 @@ void ceremony_transition_sliding_borders(void) {
     //gDPFillRectangle(gDisplayListHead++, 0, (s32) uly, 319, 239);
 
     gDPSetCycleType(gDisplayListHead++, G_CYC_1CYCLE);
+}
+
+// Kept separate from drawing so a future presentation-only frame can redraw
+// the current transition without advancing its animation.
+void ceremony_update_sliding_borders(void) {
     adjust_f32_value_transition(&gSizeSlidingBorders, gOrderedSizeSlidingBorders, D_802856BC / D_802856B4);
 }

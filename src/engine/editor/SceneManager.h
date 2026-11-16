@@ -25,6 +25,7 @@ namespace TrackEditor {
     void LoadActors(Track* track, nlohmann::json& data);
     void LoadStaticMeshActors(Track* track, nlohmann::json& data);
     void LoadTour(Track* track, nlohmann::json& data);
+    void LoadCustomTrackEffects(Track* track, nlohmann::json& data, const std::string& trackPath);
     void LoadFog(nlohmann::json& data);
 
     void SpawnActors(std::vector<std::pair<std::string, SpawnParams>> spawnList);
