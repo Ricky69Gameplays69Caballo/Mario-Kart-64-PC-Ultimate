@@ -12,6 +12,8 @@ Follow [Ricky Gameplays on YouTube](https://www.youtube.com/@Ricky_Gameplays-Cab
 
 ![Race with a large field of racers](docs/screenshots/large-race.png)
 
+**Online multiplayer is in beta.** Expect bugs and use matching game versions when playing online.
+
 ## Added features
 
 - **Up to 16 local players** in Grand Prix, VS and Battle, with optional bots filling race grids.
