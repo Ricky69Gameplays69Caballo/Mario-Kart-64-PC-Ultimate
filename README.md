@@ -6,7 +6,7 @@ Follow [Ricky Gameplays on YouTube](https://www.youtube.com/@Ricky_Gameplays-Cab
 
 ## Screenshots
 
-![Player selection with expanded roster](docs/screenshots/player-select.png)
+![Player selection with expanded roster](docs/screenshots/player-select-v097.png)
 
 ![Amped Up track selection](docs/screenshots/amped-tracks.png)
 
