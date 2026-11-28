@@ -34,7 +34,7 @@ Follow [Ricky Gameplays on YouTube](https://www.youtube.com/@Ricky_Gameplays-Cab
 
 ## Download and setup
 
-Download the [latest release (v0.4.0)](https://github.com/Ricky69Gameplays69Caballo/Mario-Kart-64-PC-Ultimate/releases/latest) for Windows, Linux or macOS, extract the archive and follow the included instructions. On Windows, run `Launch-Combined.cmd` or `Spaghettify.exe`. Open **Escape → Multiplayer → Local play** for multiplayer options.
+Download the [releases](https://github.com/Ricky69Gameplays69Caballo/Mario-Kart-64-PC-Ultimate/releases) for Windows, Linux or macOS, extract the archive and follow the included instructions. On Windows, run `Launch-Combined.cmd` or `Spaghettify.exe`. Open **Escape → Multiplayer → Local play** for multiplayer options.
 
 **A supported US Mario Kart 64 ROM is required separately.** The release does not include the ROM, extracted game archive (`mk64.o2r`), saves, personal settings or logs. Keep the executable and the supplied port resource archive together.
 
