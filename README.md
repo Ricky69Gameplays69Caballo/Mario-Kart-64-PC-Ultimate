@@ -17,6 +17,7 @@ Follow [Ricky Gameplays on YouTube](https://www.youtube.com/@Ricky_Gameplays-Cab
 ## Added features
 
 - **Up to 16 local players** in Grand Prix, VS and Battle, with optional bots filling race grids.
+- **Change racer class:** press L or R on the character select screen to cycle through classes, changing the selected character’s weight and handling.
 - **AFK takeover:** inactive players become bots after a configurable timeout; controller input immediately restores human control. Bots can use items, with separate race and Battle behavior.
 - **1, 2 or 3 monitors**, improved split-screen layouts, duplicate character selection and saved controller-device assignments.
 - Optional **FPS counter** and **hold Tab to fast-forward**.
